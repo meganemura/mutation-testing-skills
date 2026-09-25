@@ -17,7 +17,7 @@ references/            tool-neutral mutation testing concepts
 skills/stryker/         the StrykerJS skill
   SKILL.md
   references/general -> ../../../references (symlink)
-  references/setup.md
+  references/install.md
   references/configuration.md
   references/results.md
   references/troubleshooting.md

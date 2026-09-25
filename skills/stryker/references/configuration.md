@@ -1,56 +1,55 @@
 # StrykerJS configuration options
 
-The options most often needed. See Stryker's own configuration docs for
-the full list.
+Each option's meaning and default live in the installed package's own
+schema. Read one option:
 
-- `mutate` [`string[]`]: the production files to mutate. Supports a line
-  range: `"src/app.js:5-7"` mutates only lines 5 through 7.
-- `testRunner` [`string`]: the test runner plugin to use, such as `"tap"`
-  or `"jest"`.
-- `testFiles` [`string[]`]: limit which test files run during mutation
-  testing.
-- `coverageAnalysis` [`string`]: `"off"`, `"all"`, or `"perTest"`.
-  `"perTest"` is the default and runs only the tests that cover each
-  mutant.
-- `reporters` [`string[]`]: which reporters to use, such as `"clear-text"`,
-  `"html"`, `"json"`, `"progress"`.
-- `thresholds` [`object`]: `{ "high": 80, "low": 60, "break": null }`.
-  Set `break` to a number to fail the build when the score drops below
-  it.
-- `incremental` [`boolean`] and `incrementalFile` [`string`]: enable
-  incremental mode and choose where its result file lives. See
-  `references/general/scoping.md`.
-- `force` [`boolean`]: rerun every mutant even when an incremental file
-  exists.
-- `concurrency` [`number` | `string`]: the number of worker processes, or
-  a percentage of CPU cores.
-- `timeoutMS` [`number`] and `timeoutFactor` [`number`]: control how long
-  a mutant's test run may take before Stryker treats it as a timeout.
-  The formula: `timeoutForTestRunMs = netTimeMs * timeoutFactor + timeoutMS + overheadMs`.
-- `ignoreStatic` [`boolean`]: skip static mutants, mutants whose code runs
-  only while the file loads, not inside a test. Requires
-  `"coverageAnalysis": "perTest"`.
-- `disableTypeChecks` [`boolean` | `string`]: disable TypeScript type
-  checking for the given files, since a mutant often introduces a type
-  error that has nothing to do with the mutant's test result.
-- `checkers` [`string[]`]: enable a checker plugin, such as `"typescript"`,
-  to reject a mutant that fails to type-check.
-- `tsconfigFile` [`string`]: the tsconfig Stryker rewrites for the
-  sandbox. Also used by the TypeScript checker.
-- `ignorePatterns` [`string[]`]: files or directories to leave out of the
-  sandbox copy. Does not affect which files are mutated; use `mutate` for
-  that.
-- `tempDirName` [`string`]: the sandbox directory name. Deleted after a
-  successful run.
-- `cleanTempDir` [`boolean` | `"always"`]: whether to delete the temp
-  dir, and when.
-- `dryRunOnly` [`boolean`]: run the initial test run only, without
-  mutating. Useful to confirm the setup works before a full run.
-- `logLevel` [`string`]: console log level. One of `off`, `fatal`, `error`,
-  `warn`, `info`, `debug`, `trace`.
+```
+jq -r '.properties.<option>.description' node_modules/@stryker-mutator/core/schema/stryker-schema.json
+```
+
+List every option name:
+
+```
+jq -r '.properties | keys[]' node_modules/@stryker-mutator/core/schema/stryker-schema.json
+```
+
+A runner's own options sit in its own schema file, at
+`node_modules/@stryker-mutator/<runner>/dist/schema/<runner>-options.json`.
+For prose, read Stryker's configuration docs at the tag that matches
+your installed version:
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/configuration.md`.
+
+The notes below are not in either schema.
+
+## A command-line option replaces its config file option
 
 A command-line option fully replaces the matching config file option; the
 two do not merge.
+
+## `mutate` supports a line range
+
+`mutate` can point at part of a file, not only a whole file. Postfix the
+path with `:startLine[:startColumn]-endLine[:endColumn]`, for example
+`"src/app.js:5-7"`. This is also in the schema's own `mutate`
+description; it is repeated here because it is easy to miss.
+
+## `--incremental` takes no value on the command line
+
+`--incremental` is a flag; it takes no value. `--incremental false` on
+the command line is read as a config file name, and fails.
+
+## The timeout formula
+
+`timeoutMS` and `timeoutFactor` feed one formula:
+`timeoutForTestRunMs = netTimeMs * timeoutFactor + timeoutMS + overheadMs`.
+Neither option's own description states this formula.
+
+## `ignoreStatic` needs `perTest` coverage analysis
+
+`ignoreStatic` skips a static mutant: one whose code runs only while the
+file loads, not inside a test. It requires
+`"coverageAnalysis": "perTest"`. The schema's own description does not
+state this requirement.
 
 ## Disabling a mutant
 

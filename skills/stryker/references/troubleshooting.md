@@ -99,16 +99,16 @@ checks mutants one at a time. Mutant grouping is tracked in issue #6112.
 ## Build command fails
 
 Run the `buildCommand` yourself first, outside Stryker, to confirm it
-works on its own. If it does, run it again inside a sandbox directory
-(`.stryker-tmp/sandbox-*`) after a Stryker run, since the sandbox lacks
-your `node_modules` and needs the full path to a compiler binary.
+works on its own, then run it again inside a sandbox directory. See
+Stryker's troubleshooting docs, section "Build command fails":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## The initial test run fails with a type error
 
 Stryker inserts a mutant, which can introduce a type error unrelated to
-the test's own logic. Stryker adds `// @ts-nocheck` to suppress this, but
-only inside `lib`, `src`, and `test` by default. If your code lives
-elsewhere, set `disableTypeChecks` to a glob pattern that covers it.
+the test's own logic. See Stryker's troubleshooting docs, section "The
+initial test run fails with a type error":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## `disableTypeChecks: true` touches files you did not mean to mutate
 
@@ -123,6 +123,12 @@ If your tests run through Node's own type stripping rather than a
 compiler step, no test needs type checking at run time in the first
 place. Set `disableTypeChecks` to the same glob as `mutate`, so it
 touches only the files under test.
+
+The core schema's own `disableTypeChecks` description says the default
+touches only `lib`, `src`, and `test`. Stryker's prose configuration docs
+say the default touches every TypeScript-like file. A measured run
+matched the prose docs, not the schema's own description: files outside
+`lib`, `src`, and `test` also received `// @ts-nocheck`.
 
 ## A test that checks a compiler's output fails only under mutation
 
@@ -152,39 +158,62 @@ did not test the failure itself.
 
 ## Windows: Jest and a hidden temp directory
 
-Jest does not match a hidden folder on Windows, and Stryker's default
-`tempDirName`, `.stryker-tmp`, is hidden by its leading dot. This can show
-as "No tests found" or as every mutant reporting Survived with 0%
-score. Set `tempDirName` to a name without a leading dot, or run with
-`inPlace`.
+Jest does not match a hidden folder on Windows. See Stryker's
+troubleshooting docs, section "Windows":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## Out of memory
 
 A `Committing semi space failed` crash usually means too many worker
-processes for the machine's memory. Lower `concurrency`.
+processes for the machine's memory. See Stryker's troubleshooting docs,
+section "Out of memory":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## pnpm: a plugin is not found
 
-Stryker scans `node_modules` to auto-load a plugin such as
-`@stryker-mutator/typescript-checker`. pnpm's directory layout defeats
-this scan. List the plugins explicitly in the `plugins` config option.
+pnpm's directory layout can defeat Stryker's `node_modules` plugin scan.
+See Stryker's troubleshooting docs, section "pnpm":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## All mutants survive, but you expected kills
 
 First check whether the mutated code actually runs under your test
 command, as described in `references/general/triage.md`'s first step.
-Two known causes:
-
-- `module-alias`: Stryker's sandbox does not resolve alias imports the
-  way your project root does. Either mark `node_modules` as part of the
-  sandbox and disable `symlinkNodeModules`, or run with `inPlace`.
-- A test suite that calls the code under test indirectly, for example
-  through an HTTP request rather than a direct import. Vitest's `related`
-  filter can miss the file in this case; disable `vitest.related`, or
-  import the source file directly from the test file.
+Two known causes, `module-alias` and Vitest's `related` filter missing an
+indirect test, are in Stryker's troubleshooting docs:
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/troubleshooting.md`.
 
 ## Score is 0% across the board
 
 Confirm first that the mutated code is the code your tests actually run.
 A common cause: the tests import a built copy, such as from `dist/`,
 while Stryker mutates the source under `src/`.
+
+## Vitest: code that depends on Node's module semantics fails under Vite's module runner
+
+Symptom: a test that passes under plain Node fails under Vitest. Three
+measured cases: a module namespace's export order follows declaration
+order, not ECMA-262's sorted order; a missing-import error
+(`ERR_MODULE_NOT_FOUND`) carries no `url`; and a module that once failed
+to load stays failed, even after you add the file it was missing.
+
+Fix: set `test.experimental.viteModuleRunner: false` in the Vitest
+config. Under this setting, `vi.spyOn`, Hegel, `node:sqlite`, and
+`import.meta.dirname` all worked in testing. Whether `vi.mock` works
+under this setting was not tested; Vitest's own type definitions say
+that, with the module runner off, `vi.mock` falls back to a module
+loader.
+
+## A fixture that waits for its parent's kill can be left running forever
+
+Symptom: during a mutation run, the count of test child processes climbs,
+the whole run slows, and timeouts increase. One measured run left 145
+such processes after 20 minutes.
+
+Cause: when a runner bails on the first failure, or kills a test process
+on timeout, that test's own cleanup (its after hook) does not run. A
+child process that waits for its parent to kill it then keeps running.
+
+Fix: give the child process a wait limit of its own, so it exits on its
+own once that limit passes. Check for leftover processes with
+`pgrep -fl .stryker-tmp`.

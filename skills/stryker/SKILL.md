@@ -12,17 +12,18 @@ Follow this workflow. Each step links to a reference for the detail.
 Start with one file and its tests. A run at this scope finishes in
 seconds. See `references/general/scoping.md`.
 
-## 2. Choose and install a runner
+## 2. Install and configure
 
-Pick the test runner plugin that matches your test framework. Adding a
-dependency needs the repository owner's approval; pin the exact version.
-See `references/setup.md`.
+Follow `references/install.md`, from the top. It covers the project
+survey, the runner choice, the dependency install, and the runner
+configuration.
 
 ## 3. Write a minimal config and run it
 
 Write a `stryker.config.json` with the runner, the files to mutate, and
 the test files. Add Stryker's working directories to your ignore file for
-version control. See `references/setup.md`.
+version control, dry-run the setup, then run one file. See
+`references/install.md`.
 
 ## 4. Read the result
 
