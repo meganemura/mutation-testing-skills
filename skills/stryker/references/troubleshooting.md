@@ -2,24 +2,53 @@
 
 ## TypeScript 7 has no JS API for tsconfig rewriting
 
-Confirmed by running Stryker against TypeScript 7 (native): Stryker stops
-with `TypeError: ts.parseConfigFileTextToJson is not a function`.
+Stryker 10.0.0 stops with this error when the project installs
+TypeScript 7:
+
+```
+TypeError: ts.parseConfigFileTextToJson is not a function
+```
 
 Cause: Stryker's core imports the `typescript` package to rewrite the
 `extends`, `references`, `include`, `exclude`, and `files` fields of the
-sandbox's tsconfig. TypeScript 7's native compiler does not expose that
-JS API.
+sandbox's tsconfig. It calls `ts.parseConfigFileTextToJson` and
+`ts.resolveProjectReferencePath`. TypeScript 7 does not have a JS API.
 
-Workaround: if your tsconfig has no `extends` and no `references`
-pointing outside the sandbox, the rewrite would not change anything
-either way. Point `tsconfigFile` at a file name that does not exist, and
-Stryker skips the rewrite.
+Upstream status: stryker-js issue #6111 tracks the fix. The maintainers
+chose to parse the tsconfig with `jsonc-parser` and to stop importing
+`typescript` in core. Pull request #6231 carries that change. When a
+release includes it, remove the workaround below.
 
-If your tsconfig does point outside the sandbox, this workaround does
-not apply. Two options, neither confirmed by this pilot: run with
-`inPlace`, or install a TypeScript 6.x copy alongside TypeScript 7 for
-Stryker to use. The `typescript-checker` plugin may depend on the same
-missing API; this is also unconfirmed.
+Workaround A, with no new dependency: use this workaround only when your
+tsconfig has no `extends` and no `references` that point outside the
+sandbox. In that case the rewrite changes nothing. Point `tsconfigFile`
+at a file name that does not exist, and Stryker skips the rewrite.
+
+```json
+{
+  "tsconfigFile_comment": "TypeScript 7 has no JS API. This tsconfig has no extends or references, so the rewrite has nothing to change.",
+  "tsconfigFile": "stryker-skip-tsconfig-rewrite.json"
+}
+```
+
+Workaround B, when the tsconfig points outside the sandbox: give Stryker
+its own TypeScript 6 copy. Users in issue #6110 report this with pnpm:
+
+```yaml
+# pnpm-workspace.yaml
+packageExtensions:
+  "@stryker-mutator/core@<version>":
+    dependencies:
+      typescript: "npm:@typescript/typescript6@^6.0.2"
+```
+
+This workaround adds a dependency, so it needs the owner's approval. The
+npm and yarn forms of this override are not confirmed here.
+
+The type checker is a separate case. `@stryker-mutator/typescript-checker`
+10.0.0 has experimental support for TypeScript 7 (stryker-js pull
+request #6099). It does not yet support mutant grouping (issue #6112), so
+it can be slower than with TypeScript 6.
 
 ## Build command fails
 
