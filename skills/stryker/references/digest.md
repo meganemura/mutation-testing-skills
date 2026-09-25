@@ -123,6 +123,11 @@ inclusion check accepts a range whose end equals the node's own end, a
 range built this way always includes the intended mutant. It also
 includes any other mutant inside the same source range.
 
+Tested with Stryker 10.0.0: the `rerun` command of one `CallExpression`
+survivor instrumented exactly one mutant, and that mutant survived again.
+A larger mutant that encloses the range, such as the `BlockStatement`
+around the same call, stays out of the run.
+
 ### `no_coverage[]`
 
 One entry per mutant with status `NoCoverage`: `{ subject, file, line,
