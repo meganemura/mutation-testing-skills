@@ -17,15 +17,20 @@ surviving mutants.
 
 ## Install a skill
 
-Claude Code loads a personal skill from a directory under
-`~/.claude/skills/`. Clone this repository, then link the skill you want
-into that directory:
+Install a skill with the [`skills`](https://github.com/vercel-labs/skills)
+CLI. This command installs the StrykerJS skill for Claude Code, for all
+of your projects:
 
 ```
-ln -s <repo>/skills/stryker ~/.claude/skills/stryker
+npx skills add meganemura/mutation-testing-skills --skill stryker -g -a claude-code
 ```
 
-Replace `<repo>` with the path where you cloned this repository.
+To see the skills in this repository, run
+`npx skills add meganemura/mutation-testing-skills --list`. To install
+into the current project instead, leave out `-g`.
+
+The CLI copies the skill's `references/general` link as a directory, so
+the installed skill carries the shared references with it.
 
 ## Agent context
 

@@ -17,14 +17,18 @@ mutation testing のための Claude Code の skill 集です。
 
 ## skill を入れる
 
-Claude Code は、個人の skill を `~/.claude/skills/` の下のディレクトリから読み込みます。
-このリポジトリを clone してから、使いたい skill をそのディレクトリに link します。
+skill は [`skills`](https://github.com/vercel-labs/skills) の CLI で入れます。
+次のコマンドは、StrykerJS の skill を、Claude Code のすべてのプロジェクトで使えるように入れます。
 
 ```
-ln -s <repo>/skills/stryker ~/.claude/skills/stryker
+npx skills add meganemura/mutation-testing-skills --skill stryker -g -a claude-code
 ```
 
-`<repo>` は、このリポジトリを clone したパスに置き換えてください。
+このリポジトリにある skill の一覧は、`npx skills add meganemura/mutation-testing-skills --list` で見られます。
+今のプロジェクトだけに入れるときは、`-g` を外します。
+
+CLI は、skill の `references/general` の link をディレクトリとしてコピーします。
+なので、入れた skill は、共有の references も一緒に持ちます。
 
 ## エージェント向けの文脈
 
