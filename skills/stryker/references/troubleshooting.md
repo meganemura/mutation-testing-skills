@@ -31,8 +31,32 @@ at a file name that does not exist, and Stryker skips the rewrite.
 }
 ```
 
-Workaround B, when the tsconfig points outside the sandbox: give Stryker
-its own TypeScript 6 copy. Users in issue #6110 report this with pnpm:
+Workaround B, when the tsconfig points outside the sandbox: install
+TypeScript 6 and TypeScript 7 side by side. The TypeScript team gives
+this form in its TypeScript 7.0 announcement, for tools that need the
+JS API:
+
+```json
+{
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}
+```
+
+The package name `typescript` then holds TypeScript 6, so Stryker's
+`import('typescript')` gets the JS API. The `tsc` command runs
+TypeScript 7, and `tsc6` runs TypeScript 6. Pin exact versions in place
+of the ranges, and get the owner's approval for the new dependency.
+
+Before you use workaround B, search the project for a path into
+`node_modules/typescript`, such as `node_modules/typescript/bin/tsc`.
+Code that uses such a path gets TypeScript 6 after the change and gives
+no warning.
+
+For a pnpm project, users in issue #6110 report a narrower override. It
+gives TypeScript 6 to Stryker alone:
 
 ```yaml
 # pnpm-workspace.yaml
@@ -42,8 +66,7 @@ packageExtensions:
       typescript: "npm:@typescript/typescript6@^6.0.2"
 ```
 
-This workaround adds a dependency, so it needs the owner's approval. The
-npm and yarn forms of this override are not confirmed here.
+This guide has not tested either form of workaround B.
 
 The type checker is a separate case. `@stryker-mutator/typescript-checker`
 10.0.0 has experimental support for TypeScript 7 (stryker-js pull
