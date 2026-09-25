@@ -10,7 +10,7 @@ maps each to the tool-neutral term in `references/general/concepts.md`.
 | Killed | detected (a test killed it) |
 | Timeout | detected (the run did not finish in time) |
 | Survived | survived |
-| NoCoverage | survived, no coverage |
+| NoCoverage | no coverage |
 | CompileError | invalid |
 | RuntimeError | invalid |
 | Ignored | ignored |
@@ -67,8 +67,8 @@ Regex, StringLiteral, UnaryOperator, UpdateOperator.
 
 ## A worked example
 
-A 38-line function that builds a UUID v7 value, tested with a run against
-one file and its test, produced 32 mutants in 3 seconds: 25 killed, 2
+A 38-line file that builds a UUID v7 value, tested with a run against
+that file and its test, produced 32 mutants in 3 seconds: 25 killed, 2
 timed out, 5 survived, 0 with no coverage. Score: 84.38%.
 
 The two timeouts:
@@ -82,9 +82,14 @@ The five survivors, and what each showed:
 
 - `crypto.getRandomValues(bytes);` mutated to `;` (`CallExpression`)
   survived: the test did not check the random portion of the output.
-- `let lastMs = -1;` mutated to `+1` (`UnaryOperator`) survived, and is
-  effectively equivalent: only a test that passes a timestamp of exactly
-  1 millisecond could tell the two values apart.
+- `let lastMs = -1;` mutated to `+1` (`UnaryOperator`) survived. It looks
+  equivalent, but it is a missing boundary case. Suppose the first call in
+  the process passes a timestamp of 0. The original uses 0 as the
+  timestamp. The mutant uses 1, because it takes the larger of the
+  timestamp and `lastMs`. A first call with a timestamp of 0 or 1 kills
+  it. The tap runner starts a new process for each test file, so a test
+  file can control the first call. Check this kind of reasoning before
+  you disable a mutant as equivalent.
 - `if (ms === lastMs)` mutated to `if (true)` (`ConditionalExpression`),
   and its `else` body mutated to `{}` (`BlockStatement`), both survived:
   the test did not check the counter's random starting value.
