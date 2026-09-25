@@ -60,6 +60,9 @@ name, such as `<repo>`.
 This repository holds documents and dependency-free scripts. Do not add
 a dependency.
 
+When you change README.md, carry the same change into README.ja.md, its
+Japanese translation, kept one sentence per line.
+
 ## Run a script's tests
 
 Each skill's scripts carry their own `node --test` files next to them.

@@ -24,9 +24,14 @@ the same way each time.
 
 Add a post-processor: a dependency-free Node script,
 `skills/stryker/scripts/digest.mjs`, that reads a Stryker report and
-writes an agent-facing digest. Its `survivors[]` keys match mutineer's
-list above; Stryker's report carries more than mutineer's, so `survivors[]`
-adds `location`, `replacement`, `tests`, and `rerun`.
+writes an agent-facing digest. Its `survivors[]` keys are modeled on
+mutineer's list above; `patch` fills the role mutineer's `diff` does, as
+a `git apply`-ready unified diff rather than a bare hunk. Stryker's
+report carries more than mutineer's, so `survivors[]` adds `location`,
+`replacement`, `tests`, `rerun`, `rerun_exact`, and `source_hash`. A
+survivor whose covering tests never actually ran for it, a measurement
+gap rather than an untested line, goes to a separate `unverified[]`
+instead.
 
 Each survivor gets a stable id: a hash of the file, the enclosing
 subject, the mutated token, the operator, and the replacement, with no

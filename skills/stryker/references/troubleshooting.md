@@ -204,6 +204,42 @@ under this setting was not tested; Vitest's own type definitions say
 that, with the module runner off, `vi.mock` falls back to a module
 loader.
 
+## Vitest 5: every mutant with per-test coverage survives, and no test runs
+
+Symptom: most survivors have a non-empty `coveredBy`, and `testsCompleted`
+is `0`. digest.mjs reports these under `unverified[]`, not `survivors[]`.
+
+Cause: Vitest 5 matches `testNamePattern` against a suite's name joined to
+a test's name with ` > `. Stryker's vitest-runner 10.0.0 joins them with a
+plain space and builds a regular expression from that, so a test inside a
+`describe` block never matches, and the runner selects no test for the
+mutant (stryker-js issue #6210; fix pull requests #6214 and #6220, not
+released as of this writing).
+
+Confirm: `npx vitest run <file> -t "<describe> <test>"` selects 0 tests;
+`npx vitest run <file> -t "<describe> > <test>"` selects 1.
+
+Fix: until the fix releases, pin Vitest 4. The published vitest-runner
+10.0.0 names `4.1.10` in its `devDependencies`; `4.1.11`, a later patch
+of the same line, also worked. See "runner plugin and test framework
+version" in `install.md`. Measured on one file: `killed=58 survived=105`
+under Vitest 5, `killed=145 survived=18` under Vitest `4.1.11`.
+
+## A mutation run leaves temporary directories behind, and a later test fails on them
+
+Symptom: after a mutation run, a plain test run fails while it inspects
+the contents of a shared temporary directory.
+
+Cause: when a mutant stops a test partway, the test's own cleanup does
+not run, so anything it wrote under the shared temporary directory stays
+behind. Measured: 586 leftover entries after one full run.
+
+Fix: make each test inspect only what it created itself. One way: point
+`TMPDIR` at a directory private to the test run, for the run's duration.
+Node's `os.tmpdir()` reads `TMPDIR` on every call, so this takes effect
+without a restart. Anything left behind from before this fix sits in the
+OS's own temporary directory, findable by its name prefix.
+
 ## A fixture that waits for its parent's kill can be left running forever
 
 Symptom: during a mutation run, the count of test child processes climbs,

@@ -3,8 +3,10 @@
 // Boundary: does not run Stryker; every report here is a synthetic fixture.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,10 +15,12 @@ import {
   assignIds,
   buildDiff,
   buildDigest,
+  buildPatch,
   compareBaseline,
   extractToken,
   findSubject,
   formatText,
+  sourceHash,
 } from './digest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -28,6 +32,8 @@ const baselinePath = path.join(fixturesDir, 'baseline-digest.json');
 function loadReport() {
   return JSON.parse(readFileSync(reportPath, 'utf8'));
 }
+
+const gitAvailable = spawnSync('git', ['--version']).status === 0;
 
 function runCli(args, options = {}) {
   try {
@@ -66,25 +72,84 @@ test('summary counts and score, including a zero denominator', () => {
   assert.equal(emptyDigest.summary.score_covered, null);
 });
 
-test('survivor token, diff, subject, tests, and rerun', () => {
+test('survivor patch, subject, tests, source_hash, rerun, and rerun_exact', () => {
   const digest = buildDigest(loadReport());
-  const survivor = digest.survivors.find((s) => s.token === 'total - 1');
+  const survivor = digest.survivors.find((s) => s.replacement === 'total + 1');
   assert.equal(survivor.subject, 'add');
   assert.equal(survivor.file, 'src/a.ts');
   assert.equal(survivor.line, 5);
-  assert.equal(survivor.diff, '@@ -5 +5 @@\n-    total = total - 1;\n+    total = total + 1;');
+  assert.equal(
+    survivor.patch,
+    '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -5,1 +5,1 @@\n' +
+      '-    total = total - 1;\n+    total = total + 1;\n',
+  );
   assert.deepEqual(survivor.tests, [{ name: 'add works', file: 'test/a.test.ts' }]);
-  assert.equal(survivor.rerun, 'npx stryker run --force --mutate "src/a.ts:5:12-5:21"');
+  assert.equal(survivor.rerun, 'npx stryker run --incremental --mutate "src/a.ts"');
+  assert.equal(survivor.rerun_exact, 'npx stryker run --force --mutate "src/a.ts:5:12-5:21"');
+  assert.ok(!('token' in survivor), 'survivors[] no longer carries token');
+  assert.ok(!('diff' in survivor), 'survivors[] no longer carries diff');
+
+  const expectedHash = createHash('sha256')
+    .update(loadReport().files['src/a.ts'].source)
+    .digest('hex')
+    .slice(0, 16);
+  assert.equal(survivor.source_hash, expectedHash);
+  assert.equal(sourceHash(loadReport().files['src/a.ts'].source), expectedHash);
 
   const method = digest.survivors.find((s) => s.subject === 'Box#inc');
   assert.ok(method, 'expected a survivor inside Box#inc');
 });
 
-test('rerun range: end column is one less than the report location, per Stryker\'s CLI parsing', () => {
+test('rerun_exact range: end column is one less than the report location, per Stryker\'s CLI parsing', () => {
   const digest = buildDigest(loadReport());
   const blockSurvivor = digest.survivors.find((s) => s.operator === 'BlockStatement');
   // location: start {line:4,column:19}, end {line:6,column:4} (1-based, end exclusive)
-  assert.equal(blockSurvivor.rerun, 'npx stryker run --force --mutate "src/a.ts:4:18-6:3"');
+  assert.equal(
+    blockSurvivor.rerun_exact,
+    'npx stryker run --force --mutate "src/a.ts:4:18-6:3"',
+  );
+});
+
+test('patch applies with git apply --unidiff-zero', { skip: !gitAvailable && 'git is not installed' }, () => {
+  const digest = buildDigest(loadReport());
+  const dir = mkdtempSync(path.join(tmpdir(), 'digest-patch-'));
+  try {
+    for (const [file, fileReport] of Object.entries(loadReport().files)) {
+      const target = path.join(dir, file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, fileReport.source);
+    }
+    for (const survivor of digest.survivors) {
+      const patchFile = path.join(dir, 'mutant.patch');
+      writeFileSync(patchFile, survivor.patch);
+      const result = spawnSync(
+        'git',
+        ['-C', dir, 'apply', '--unidiff-zero', '--check', 'mutant.patch'],
+        { encoding: 'utf8' },
+      );
+      assert.equal(
+        result.status,
+        0,
+        `git apply --check failed for ${survivor.file}:${survivor.line}: ${result.stderr}`,
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildPatch wraps buildDiff with a/ and b/ file headers and a trailing newline', () => {
+  const lines = ['if (x) {', '  y();', '}'];
+  const patch = buildPatch(
+    'src/f.ts',
+    lines,
+    { start: { line: 1, column: 8 }, end: { line: 3, column: 2 } },
+    '{}',
+  );
+  assert.equal(
+    patch,
+    '--- a/src/f.ts\n+++ b/src/f.ts\n@@ -1,3 +1,1 @@\n-if (x) {\n-  y();\n-}\n+if (x) {}\n',
+  );
 });
 
 test('id is stable when a line is added earlier in the file', () => {
@@ -101,20 +166,24 @@ test('id is stable when a line is added earlier in the file', () => {
   const before = buildDigest(report);
   const after = buildDigest(shifted);
 
-  const beforeIds = before.survivors.map((s) => `${s.file}:${s.token}:${s.operator}`).sort();
-  const afterIds = after.survivors.map((s) => `${s.file}:${s.token}:${s.operator}`).sort();
+  // `replacement` stands in for `token` here: both come from the same
+  // report positions, and a survivor no longer carries `token`.
+  const beforeIds = before.survivors.map((s) => `${s.file}:${s.replacement}:${s.operator}`).sort();
+  const afterIds = after.survivors.map((s) => `${s.file}:${s.replacement}:${s.operator}`).sort();
   assert.deepEqual(beforeIds, afterIds);
 
-  const beforeById = new Map(before.survivors.map((s) => [`${s.file}|${s.token}|${s.operator}`, s.id]));
+  const beforeById = new Map(
+    before.survivors.map((s) => [`${s.file}|${s.replacement}|${s.operator}`, s.id]),
+  );
   for (const s of after.survivors) {
-    const key = `${s.file}|${s.token}|${s.operator}`;
+    const key = `${s.file}|${s.replacement}|${s.operator}`;
     assert.equal(s.id, beforeById.get(key), `id changed for ${key}`);
   }
 });
 
 test('the same token appearing twice gets two different ids', () => {
   const digest = buildDigest(loadReport());
-  const boxSurvivor = digest.survivors.find((s) => s.token === 'this.value + step');
+  const boxSurvivor = digest.survivors.find((s) => s.replacement === 'this.value - step');
   const killed = loadReport().files['src/a.ts'].mutants.find(
     (m) => m.status === 'Killed' && m.mutatorName === 'ArithmeticOperator',
   );
@@ -133,7 +202,7 @@ test('the same token appearing twice gets two different ids', () => {
 test('a duplicate\'s id does not change when its twin\'s status changes', () => {
   const report = loadReport();
   const before = buildDigest(report);
-  const beforeSurvivorId = before.survivors.find((s) => s.token === 'this.value + step').id;
+  const beforeSurvivorId = before.survivors.find((s) => s.replacement === 'this.value - step').id;
 
   // Flip the killed twin (line 14) to Survived too; the original survivor
   // (line 13) keeps its position and so must keep its id.
@@ -144,7 +213,7 @@ test('a duplicate\'s id does not change when its twin\'s status changes', () => 
 
   const after = buildDigest(flipped);
   const afterSurvivor = after.survivors.find(
-    (s) => s.token === 'this.value + step' && s.line === 13,
+    (s) => s.replacement === 'this.value - step' && s.line === 13,
   );
   assert.equal(afterSurvivor.id, beforeSurvivorId);
 });
@@ -175,6 +244,15 @@ test('a report with no new survivors exits 0', () => {
   const sameBaseline = { survivors: digest.survivors };
   const result = compareBaseline(digest, sameBaseline);
   assert.equal(result.new_survivors.length, 0);
+});
+
+test('a v2 digest\'s id matches the same survivor\'s id in a v1 (schema_version 1.0) baseline', () => {
+  const digest = buildDigest(loadReport());
+  const baselineDigest = JSON.parse(readFileSync(baselinePath, 'utf8'));
+  assert.equal(baselineDigest.schema_version, '1.0');
+  const v1Entry = baselineDigest.survivors.find((s) => s.token === 'total - 1');
+  const v2Survivor = digest.survivors.find((s) => s.replacement === 'total + 1');
+  assert.equal(v2Survivor.id, v1Entry.id, 'id must not change between schema versions');
 });
 
 test('an unreadable report file exits 2', () => {
@@ -258,9 +336,86 @@ test('buildDiff emits a multi-line hunk header when the range spans lines', () =
   assert.equal(diff, '@@ -1,3 +1,1 @@\n-if (x) {\n-  y();\n-}\n+if (x) {}');
 });
 
-test('formatText prints one block per survivor and a summary line', () => {
+test('formatText prints one block per survivor (rerun and rerun_exact) and a summary line', () => {
   const digest = buildDigest(loadReport());
   const text = formatText(digest);
-  assert.equal(text.split('\n').filter((l) => l.startsWith('npx stryker run')).length, 3);
-  assert.match(text, /^summary: total=10 /m);
+  // 3 survivors x 2 rerun commands (rerun, rerun_exact) each.
+  assert.equal(text.split('\n').filter((l) => l.startsWith('npx stryker run')).length, 6);
+  assert.match(text, /^summary: total=10 .*unverified=0 .*score_excluding_unverified=42\.86$/m);
+  assert.doesNotMatch(text, /ran no test/);
+});
+
+test('unverified[]: a Survived, covered mutant with no completed test run does not enter survivors[]', () => {
+  const report = {
+    schemaVersion: '1.0',
+    projectRoot: '/repo',
+    files: {
+      'src/u.ts': {
+        source: 'export function u(x) {\n  return x + 1;\n}\n',
+        mutants: [
+          {
+            id: 'u1',
+            mutatorName: 'ArithmeticOperator',
+            replacement: 'x - 1',
+            status: 'Survived',
+            coveredBy: ['t1'],
+            testsCompleted: 0,
+            location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+          },
+          {
+            id: 'u2',
+            mutatorName: 'ArithmeticOperator',
+            replacement: 'x * 1',
+            status: 'Survived',
+            coveredBy: ['t1'],
+            testsCompleted: 2,
+            location: { start: { line: 2, column: 10 }, end: { line: 2, column: 11 } },
+          },
+          {
+            id: 'u3',
+            mutatorName: 'ArithmeticOperator',
+            replacement: 'x % 1',
+            status: 'Survived',
+            coveredBy: [],
+            testsCompleted: 0,
+            location: { start: { line: 2, column: 10 }, end: { line: 2, column: 12 } },
+          },
+        ],
+      },
+    },
+    testFiles: {
+      'test/u.test.ts': { tests: [{ id: 't1', name: 'u works' }] },
+    },
+  };
+
+  const digest = buildDigest(report);
+
+  assert.equal(digest.unverified.length, 1);
+  assert.equal(digest.unverified[0].replacement, 'x - 1');
+  assert.ok(digest.unverified[0].patch, 'unverified entries carry a patch, same shape as survivors[]');
+  assert.ok(digest.unverified[0].rerun);
+  assert.ok(digest.unverified[0].rerun_exact);
+  assert.ok(digest.unverified[0].source_hash);
+
+  // u2 (a real, completed run) and u3 (Survived but with an empty
+  // coveredBy, so the guard does not fire) both stay in survivors[].
+  const survivorReplacements = digest.survivors.map((s) => s.replacement).sort();
+  assert.deepEqual(survivorReplacements, ['x % 1', 'x * 1']);
+
+  // Stryker counts an unverified mutant as survived, so `summary.survived`
+  // and `summary.score` are unchanged by the split; only the routing
+  // between survivors[] and unverified[] changes.
+  assert.equal(digest.summary.survived, 3);
+  assert.equal(digest.summary.unverified, 1);
+  assert.equal(digest.summary.score, 0);
+  assert.equal(digest.summary.score_excluding_unverified, 0);
+
+  const text = formatText(digest);
+  assert.match(text, /^1 survivors ran no test; fix the measurement first\. See unverified\[\]\.$/m);
+
+  // unverified[] never counts toward --baseline's new_survivors.
+  const unverifiedId = digest.unverified[0].id;
+  const baseline = compareBaseline(digest, { survivors: [] });
+  assert.equal(baseline.new_survivors.length, 2);
+  assert.ok(!baseline.new_survivors.some((s) => s.id === unverifiedId));
 });

@@ -70,6 +70,9 @@ Before you touch anything, check these points:
 - Whether tests share a resource, such as a fixed port or file name. A
   parallel worker can then report a false kill; see
   `references/general/triage.md`.
+- Whether a test inspects the contents of a shared temporary directory.
+  See "A mutation run leaves temporary directories behind, and a later
+  test fails on them" in `troubleshooting.md`.
 
 ## 2. Choose a runner
 
@@ -134,6 +137,14 @@ Two points from measurement, to help you choose:
   moderate findings through `typed-rest-client`'s dependency on `qs`.
 - `@stryker-mutator/core` alone carries about 166 transitive dependencies
   (measured on Stryker 10.0.0).
+- Check which version of the test framework the runner plugin was tested
+  against; a peer dependency range that allows a newer major does not
+  mean that version works. Read it from the runner plugin's own installed
+  `package.json`, under `devDependencies`: `jq -r
+  '.devDependencies.vitest' node_modules/@stryker-mutator/vitest-runner/package.json`
+  (example: the published vitest-runner 10.0.0 names `vitest` `4.1.10`).
+  See "Vitest 5: every mutant with per-test coverage survives, and no
+  test runs" in `troubleshooting.md`.
 
 ## 4. Configure the runner
 

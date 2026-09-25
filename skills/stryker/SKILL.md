@@ -28,7 +28,7 @@ version control, dry-run the setup, then run one file. See
 ## 4. Read the result
 
 Run `scripts/digest.mjs` on the report first; see `references/digest.md`.
-It lists survivors with a stable id, a diff, and a rerun command. See
+It lists survivors with a stable id, a patch, and a rerun command. See
 `references/results.md` for Stryker's status names and score formulas,
 and `references/general/concepts.md` for what each term means.
 

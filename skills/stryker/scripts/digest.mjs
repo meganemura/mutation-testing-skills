@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Responsibility: turn a Stryker mutation-testing-report-schema 1.x report
 // into a record an agent can act on: a survivor list with a stable id, a
-// diff, the covering tests, and a command that reruns just that mutant.
+// `git apply`-ready patch, the covering tests, and a command that reruns
+// just that mutant. A survivor a test never actually ran goes to a
+// separate list, so an agent does not mistake a measurement gap for an
+// untested line.
 // Boundary: this script only reads a report Stryker already wrote. It does
 // not run Stryker, and it does not edit source or test files.
 //
@@ -102,7 +105,12 @@ export function extractToken(lines, location) {
   return collapseWhitespace(parts.join(' '));
 }
 
-/** Builds a unified-diff hunk for the source range a mutant replaces. */
+/**
+ * Builds a unified-diff hunk for the source range a mutant replaces. Always
+ * carries the ",<count>" form, even for a one-line hunk, because `patch`
+ * (below) feeds this straight into a `git apply` patch, and the count form
+ * is the one both git and diffutils always accept.
+ */
 export function buildDiff(lines, location, replacement) {
   const { start, end } = location;
   const originalLines = lines.slice(start.line - 1, end.line);
@@ -113,15 +121,33 @@ export function buildDiff(lines, location, replacement) {
   const mutatedLines = (prefix + replacement + suffix).split('\n');
   const n = originalLines.length;
   const m = mutatedLines.length;
-  const header =
-    n === 1 && m === 1
-      ? `@@ -${start.line} +${start.line} @@`
-      : `@@ -${start.line},${n} +${start.line},${m} @@`;
+  const header = `@@ -${start.line},${n} +${start.line},${m} @@`;
   return [
     header,
     ...originalLines.map((l) => `-${l}`),
     ...mutatedLines.map((l) => `+${l}`),
   ].join('\n');
+}
+
+/**
+ * Builds a `git apply`-ready patch for one mutant: a two-line file header
+ * plus `buildDiff`'s hunk, trailing newline included. The hunk carries no
+ * context lines, so an agent must apply it with `git apply --unidiff-zero`;
+ * plain `git apply` rejects a zero-context hunk unless it matches at the
+ * end of the file (verified against real git). Context lines were
+ * rejected as the default: they would need clipping at file boundaries and
+ * a `\ No newline at end of file` marker for a file with no trailing
+ * newline, for a benefit (plain `git apply` support) the digest's own docs
+ * can name in one line instead.
+ */
+export function buildPatch(file, lines, location, replacement) {
+  const diff = buildDiff(lines, location, replacement);
+  return `--- a/${file}\n+++ b/${file}\n${diff}\n`;
+}
+
+/** The first 16 hex digits of a file source's sha256, used to detect a stale `rerun_exact`. */
+export function sourceHash(source) {
+  return createHash('sha256').update(source).digest('hex').slice(0, 16);
 }
 
 /**
@@ -142,11 +168,22 @@ export function buildDiff(lines, location, replacement) {
  * whose end equals the node's own end, this exact range includes the
  * mutant; it may also include any other mutant inside the same range.
  */
-export function rerunCommand(file, location) {
+export function rerunExactCommand(file, location) {
   const startColumn = location.start.column - 1;
   const endColumn = location.end.column - 1;
   const range = `${file}:${location.start.line}:${startColumn}-${location.end.line}:${endColumn}`;
   return `npx stryker run --force --mutate "${range}"`;
+}
+
+/**
+ * Builds the rerun command that survives a source edit: Stryker's own
+ * incremental mode, scoped to the mutant's file. Incremental mode
+ * realigns a mutant's position from the source diff and retries any
+ * surviving mutant in a file whose tests changed, so this stays correct
+ * after an agent edits the file; `rerunExactCommand`'s range does not.
+ */
+export function rerunCommand(file) {
+  return `npx stryker run --incremental --mutate "${file}"`;
 }
 
 /** Removes a sandbox run's machine-specific and disposable text from a reason string. */
@@ -255,15 +292,18 @@ export function buildDigest(report) {
   };
 
   const survivors = [];
+  const unverified = [];
   const noCoverage = [];
   const timeouts = [];
   const invalid = [];
   const ignored = [];
   const perSource = [];
   const killedTestIds = new Set();
+  let unverifiedCount = 0;
 
   for (const [file, fileReport] of Object.entries(report.files ?? {})) {
     const lines = fileReport.source.split('\n');
+    const fileSourceHash = sourceHash(fileReport.source);
 
     const records = (fileReport.mutants ?? [])
       .map((mutant) => ({
@@ -302,21 +342,30 @@ export function buildDigest(report) {
           .map((id) => testIndex.get(id))
           .filter(Boolean)
           .sort(compareBy([(t) => t.file, (t) => t.name]));
-        survivors.push({
+        // Survived, covered, and yet not one covering test actually ran: a
+        // measurement gap (the vitest-runner 10.0.0 / Vitest 5 pairing hit
+        // this, stryker-js issue #6210), not a missing test. Route it away
+        // from survivors[] so an agent does not spend a test-writing pass
+        // on a mutant no test tried.
+        const isUnverified = (mutant.coveredBy?.length ?? 0) > 0 && mutant.testsCompleted === 0;
+        if (isUnverified) unverifiedCount += 1;
+        const entry = {
           subject: r.subject,
           file,
           line: r._line,
           location: mutant.location,
           operator: r.operator,
           id: r.id,
-          token: r.token,
           replacement: r.replacement,
-          diff: buildDiff(lines, mutant.location, r.replacement),
+          patch: buildPatch(file, lines, mutant.location, r.replacement),
+          source_hash: fileSourceHash,
           tests,
-          rerun: rerunCommand(file, mutant.location),
+          rerun: rerunCommand(file),
+          rerun_exact: rerunExactCommand(file, mutant.location),
           _line: r._line,
           _column: r._column,
-        });
+        };
+        (isUnverified ? unverified : survivors).push(entry);
       } else if (mutant.status === 'NoCoverage') {
         noCoverage.push({
           subject: r.subject,
@@ -393,6 +442,10 @@ export function buildDigest(report) {
   const detected = statusCounts.killed + statusCounts.timeout;
   const validTotal = detected + statusCounts.survived + statusCounts.no_coverage;
   const coveredTotal = detected + statusCounts.survived;
+  // Stryker counts an unverified mutant as survived, so `score` and
+  // `score_covered` above are unchanged. This second score answers "how
+  // good is the suite, once the measurement gap itself is set aside".
+  const validExcludingUnverified = validTotal - unverifiedCount;
 
   const stripInternal = (r) => {
     const { _line, _column, ...rest } = r;
@@ -400,6 +453,7 @@ export function buildDigest(report) {
   };
 
   survivors.sort(byFileLineColumnOperatorReplacement);
+  unverified.sort(byFileLineColumnOperatorReplacement);
   noCoverage.sort(byFileLineColumnOperatorReplacement);
   timeouts.sort(byFileLineColumnOperatorReplacement);
   invalid.sort(byFileLineColumnOperatorReplacement);
@@ -407,7 +461,7 @@ export function buildDigest(report) {
   perSource.sort(compareBy([(r) => r.file]));
 
   return {
-    schema_version: '1.0',
+    schema_version: '2.0',
     source: {
       tool: 'stryker',
       report_schema_version: report.schemaVersion,
@@ -423,10 +477,15 @@ export function buildDigest(report) {
       runtime_error: statusCounts.runtime_error,
       ignored: statusCounts.ignored,
       pending: statusCounts.pending,
+      unverified: unverifiedCount,
       score: validTotal ? round2((detected / validTotal) * 100) : null,
       score_covered: coveredTotal ? round2((detected / coveredTotal) * 100) : null,
+      score_excluding_unverified: validExcludingUnverified
+        ? round2((detected / validExcludingUnverified) * 100)
+        : null,
     },
     survivors: survivors.map(stripInternal),
+    unverified: unverified.map(stripInternal),
     no_coverage: noCoverage.map(stripInternal),
     timeouts: timeouts.map(stripInternal),
     invalid: invalid.map(stripInternal),
@@ -436,7 +495,11 @@ export function buildDigest(report) {
   };
 }
 
-const BASELINE_KEYS = ['subject', 'file', 'line', 'operator', 'token', 'id'];
+// mutineer's `survivors[]` keys were the model for `subject`, `file`,
+// `line`, `operator`, and `id`; `token` matched a baseline survivor by its
+// source text once, but a survivor no longer carries `token` (see
+// `patch`), so a baseline match stays on `id` alone.
+const BASELINE_KEYS = ['subject', 'file', 'line', 'operator', 'id'];
 
 function pickBaselineFields(entry) {
   const picked = {};
@@ -454,8 +517,11 @@ export function compareBaseline(digest, baselineDigest) {
     .filter((s) => !baselineIds.has(s.id))
     .map(pickBaselineFields)
     .sort(byFileLineColumnOperatorReplacement);
+  // A survivor that moved to unverified[] ran no test this time, so its
+  // absence from survivors[] says nothing about a fix.
+  const unverifiedIds = new Set((digest.unverified ?? []).map((s) => s.id));
   const fixedSurvivors = [...baselineIds.values()]
-    .filter((s) => !currentIds.has(s.id))
+    .filter((s) => !currentIds.has(s.id) && !unverifiedIds.has(s.id))
     .map(pickBaselineFields)
     .sort(byFileLineColumnOperatorReplacement);
   return { new_survivors: newSurvivors, fixed_survivors: fixedSurvivors };
@@ -470,8 +536,11 @@ export function formatText(digest) {
   const lines = [];
   for (const s of digest.survivors) {
     lines.push(`${s.file}:${s.line} ${s.subject ?? '(unknown)'} ${s.operator} ${s.id}`);
-    lines.push(s.diff);
+    // `s.patch` carries a trailing newline for `git apply`; trim it here so
+    // the text block does not gain a stray blank line before `rerun`.
+    lines.push(s.patch.trimEnd());
     lines.push(s.rerun);
+    lines.push(s.rerun_exact);
     lines.push('');
   }
   const sm = digest.summary;
@@ -479,9 +548,15 @@ export function formatText(digest) {
     `summary: total=${sm.total} killed=${sm.killed} timeout=${sm.timeout} ` +
       `survived=${sm.survived} no_coverage=${sm.no_coverage} ` +
       `compile_error=${sm.compile_error} runtime_error=${sm.runtime_error} ` +
-      `ignored=${sm.ignored} pending=${sm.pending} score=${fmtScore(sm.score)} ` +
-      `score_covered=${fmtScore(sm.score_covered)}`,
+      `ignored=${sm.ignored} pending=${sm.pending} unverified=${sm.unverified} ` +
+      `score=${fmtScore(sm.score)} score_covered=${fmtScore(sm.score_covered)} ` +
+      `score_excluding_unverified=${fmtScore(sm.score_excluding_unverified)}`,
   );
+  if (digest.unverified.length > 0) {
+    lines.push(
+      `${digest.unverified.length} survivors ran no test; fix the measurement first. See unverified[].`,
+    );
+  }
   return lines.join('\n');
 }
 
