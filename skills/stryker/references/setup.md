@@ -54,6 +54,16 @@ Limitations: one test file is one test, run in its own process; a static
 mutant (one whose code runs only while the file loads, not inside a test)
 cannot be measured for coverage.
 
+The default `tap.testFiles` matches every file under `test/`. If that
+directory holds a helper or a fixture file that is not itself a test,
+narrow the glob, for example to `test/*.test.ts`.
+
+To exclude one test file from an otherwise broad glob, a leading `!` on a
+separate glob entry does not work with this runner (confirmed with
+Stryker 10.0.0). Write the exclusion as one extglob instead:
+`test/!(stale).test.ts` runs every `*.test.ts` file in `test/` except
+`stale.test.ts`.
+
 ## TypeScript source files
 
 When you run `.ts` test files directly with Node's own type stripping, no

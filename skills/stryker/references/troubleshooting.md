@@ -110,6 +110,46 @@ the test's own logic. Stryker adds `// @ts-nocheck` to suppress this, but
 only inside `lib`, `src`, and `test` by default. If your code lives
 elsewhere, set `disableTypeChecks` to a glob pattern that covers it.
 
+## `disableTypeChecks: true` touches files you did not mean to mutate
+
+The default value, `true`, adds `// @ts-nocheck` to every TypeScript file
+in the sandbox, not only the files under `mutate`. This can remove an
+existing `// @ts-expect-error` or `// @ts-check` directive on a file the
+mutation run never touches. A test that compares file contents, such as
+one that checks a generated file is up to date, then sees that file as
+changed and fails during the dry run, before any mutant runs.
+
+If your tests run through Node's own type stripping rather than a
+compiler step, no test needs type checking at run time in the first
+place. Set `disableTypeChecks` to the same glob as `mutate`, so it
+touches only the files under test.
+
+## A test that checks a compiler's output fails only under mutation
+
+A test that runs `tsc` or reads its result checks the inferred types of
+the real source. Instrumented source carries mutation-testing code and,
+depending on `disableTypeChecks`, `// @ts-nocheck`; its inferred types
+differ from the real source for reasons that have nothing to do with any
+mutant. Such a test fails in the dry run even before Stryker introduces a
+mutant.
+
+Exclude that test from the runner's test files and leave it to your
+normal test command instead.
+
+To confirm the cause before you exclude a test: run Stryker once with
+`cleanTempDir: false` and a `tempDirName` set apart from your usual one,
+so the sandbox survives the run. Then run the failing test directly
+inside that sandbox directory and read its output.
+
+## Two Stryker runs in one repository can delete each other's sandbox
+
+Stryker's configuration docs say that a successful run deletes its
+`tempDirName` directory in full. Suppose two Stryker runs in the same
+repository share the default `tempDirName`. Then the first run to finish
+can delete the sandbox of the other run while it is still in progress.
+Give each run its own `tempDirName`. This guide took this precaution and
+did not test the failure itself.
+
 ## Windows: Jest and a hidden temp directory
 
 Jest does not match a hidden folder on Windows, and Stryker's default
