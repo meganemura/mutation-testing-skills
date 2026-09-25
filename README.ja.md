@@ -1,5 +1,3 @@
-Language: [English](README.md) | **日本語**
-
 # mutation-testing-skills
 
 mutation testing のための Claude Code の skill 集です。

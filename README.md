@@ -1,5 +1,3 @@
-Language: **English** | [日本語](README.ja.md)
-
 # mutation-testing-skills
 
 Claude Code skills for mutation testing. Each skill covers one tool and
@@ -36,3 +34,7 @@ the installed skill carries the shared references with it.
 
 `AGENTS.md` (and its symlink, `CLAUDE.md`) describes this repository's
 layout and conventions for an agent working inside it.
+
+---
+
+[Japanese](README.ja.md)
