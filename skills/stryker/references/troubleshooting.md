@@ -68,10 +68,33 @@ packageExtensions:
 
 This guide has not tested either form of workaround B.
 
+TypeScript 7 ships an unstable API under `typescript/unstable/*`. That
+API does not replace the functions that core needs. Its
+`parseConfigFile` returns the resolved options and file names, and core
+must rewrite the original text of `extends` and `references`.
+
 The type checker is a separate case. `@stryker-mutator/typescript-checker`
-10.0.0 has experimental support for TypeScript 7 (stryker-js pull
-request #6099). It does not yet support mutant grouping (issue #6112), so
-it can be slower than with TypeScript 6.
+10.0.0 can check mutants with TypeScript 7 (stryker-js pull request
+#6099). Turn it on with this option:
+
+```json
+{
+  "checkers": ["typescript"],
+  "typescriptChecker": { "experimentalNativePreview": true }
+}
+```
+
+This mode expects the side-by-side layout of workaround B:
+
+- The checker loads TypeScript 7 from `@typescript/native/unstable/sync`.
+  Install TypeScript 7 under the alias `@typescript/native`. The load
+  error message names a `typescript7` alias, but the code and the option
+  schema use `@typescript/native`.
+- The checker still imports `typescript` to parse the tsconfig, so the
+  package name `typescript` must hold TypeScript 6.
+
+In this mode the checker does not support project references, and it
+checks mutants one at a time. Mutant grouping is tracked in issue #6112.
 
 ## Build command fails
 
