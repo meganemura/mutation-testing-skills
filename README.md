@@ -1,3 +1,5 @@
+Language: **English** | [日本語](README.ja.md)
+
 # mutation-testing-skills
 
 Claude Code skills for mutation testing. Each skill covers one tool and
