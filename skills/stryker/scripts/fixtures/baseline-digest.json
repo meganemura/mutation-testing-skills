@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "survivors": [
+    {
+      "subject": "add",
+      "file": "src/a.ts",
+      "line": 5,
+      "operator": "ArithmeticOperator",
+      "token": "total - 1",
+      "id": "fc9543b509d7"
+    },
+    {
+      "subject": "double",
+      "file": "src/b.ts",
+      "line": 20,
+      "operator": "ArithmeticOperator",
+      "token": "x / 4",
+      "id": "aaaaaaaaaaaa"
+    }
+  ]
+}

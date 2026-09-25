@@ -27,14 +27,18 @@ version control, dry-run the setup, then run one file. See
 
 ## 4. Read the result
 
-Read the mutation score and the per-mutant status. See
+Run `scripts/digest.mjs` on the report first; see `references/digest.md`.
+It lists survivors with a stable id, a diff, and a rerun command. See
 `references/results.md` for Stryker's status names and score formulas,
 and `references/general/concepts.md` for what each term means.
 
 ## 5. Triage the survivors
 
-Classify each surviving mutant and act on it. See
-`references/general/triage.md`.
+Classify each entry in `digest.mjs`'s `survivors[]`, in the order
+`references/general/triage.md` gives. After you add a test, confirm the
+kill with that entry's `rerun` command. When you judge a mutant
+equivalent, disable it with `// Stryker disable next-line <operator>:
+<reason>`.
 
 ## 6. If the run fails
 

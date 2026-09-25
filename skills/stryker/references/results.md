@@ -1,5 +1,12 @@
 # Read a StrykerJS result
 
+## Use digest.mjs first
+
+Run `scripts/digest.mjs` on the report before you read the JSON or the
+clear-text output by hand. It lists each survivor with a stable id, a
+diff, the covering tests, and a command that reruns just that mutant.
+See `digest.md`.
+
 ## Status names
 
 Stryker reports each mutant with one of these statuses. The right column
