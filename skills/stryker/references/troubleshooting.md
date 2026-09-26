@@ -240,6 +240,33 @@ Node's `os.tmpdir()` reads `TMPDIR` on every call, so this takes effect
 without a restart. Anything left behind from before this fix sits in the
 OS's own temporary directory, findable by its name prefix.
 
+## Fixing survivors while a run is still going: which setting matters
+
+`references/general/operations.md`, section 10, describes overlapping a
+running scan with an agent that writes tests for the survivors it has
+already reported. Stryker supports this because of `tempDirName`. See
+Stryker's configuration docs, section "tempDirName":
+`https://github.com/stryker-mutator/stryker-js/blob/v<version>/docs/configuration.md`.
+By default (`inPlace: false`), Stryker copies the project into that
+directory once, at the start of the run. It mutates and tests only that
+copy. An edit to a test file in the working tree, made after the run
+starts, does not reach the copy. It cannot disturb the mutants still
+being tested.
+
+`inPlace: true` removes this safety. With it, Stryker mutates the
+working tree itself. It keeps a copy of the originals in `tempDirName`
+and puts them back when the run ends. Until then, the run tests the
+mutated working tree, not a separate copy. Do not fix survivors from a
+running report while `inPlace: true` is set. An edit made during the run
+lands on the same files the run is testing.
+
+When the later mutation re-check (point (b) in operations.md) runs, give
+it a `tempDirName` and an `incrementalFile` apart from the ones the
+first run used. Two runs that share a `tempDirName` can delete each
+other's sandbox; see "Two Stryker runs in one repository can delete each
+other's sandbox" above. Two runs that share an `incrementalFile` can
+overwrite each other's saved result.
+
 ## A fixture that waits for its parent's kill can be left running forever
 
 Symptom: during a mutation run, the count of test child processes climbs,

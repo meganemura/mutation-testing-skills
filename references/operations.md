@@ -123,6 +123,46 @@ One project's measurements: a full run of 14,140 mutants took about 2.5
 hours with a per-test runner, and an estimated 9 to 10 hours with a
 per-file runner. A single file of 32 mutants took 6 seconds.
 
+## 10. Fix surviving mutants while the run that found them is still going
+
+Some tools write each surviving mutant to a result file as the run finds
+it. They do not wait for the whole run to finish. Where that is so, a
+second agent can follow the growing file. It can start writing a test
+for each survivor while the first run still works through the rest of
+the project. This overlaps two slow steps that would otherwise run one
+after the other: the run that finds survivors, and the time spent
+turning each one into a test.
+
+This works only because such a tool copies the project into a separate
+place before it starts testing. It runs every mutant against that copy,
+not against the working tree. A change made to the working tree during
+the run does not reach the copy, so an edit to a test file during the
+run does not disturb it. Confirm this from the tool's own skill before
+you rely on it. A tool that mutates the working tree in place does not
+have this property. Do not run the two steps together with such a tool;
+it would corrupt the run.
+
+Three points to hold to when running the two steps together:
+
+- (a) The agent fixing survivors edits only test files, never the source
+  under test. The running copy stays untouched, but each reported
+  survivor names a line and a column in the source at the run's start.
+  An edit to the source changes those line and column numbers in the
+  working tree. The report and the working tree then stop matching each
+  other.
+- (b) The agent fixing survivors confirms each new test with a plain
+  test run, not a fresh mutation run. A mutation run started while
+  another one already uses the machine competes with it for the same
+  CPU. Under that load a mutant that should survive can instead time
+  out (see section 6), and drop out of the survivor list a person would
+  otherwise review. One measured run showed this: an equivalent mutant
+  came back as a timeout, not as a survivor. Save the mutation re-check
+  for after the first run ends.
+- (c) When that later mutation re-check does run, give it its own
+  working copy and its own state file, apart from the ones the first
+  run used. Sharing either one between two runs risks one run deleting
+  or overwriting a file the other still needs.
+
 ## The key design, and its weak point
 
 Sections 5, 7, and 8 above depend on a stable key: an identifier for one
