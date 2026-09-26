@@ -47,4 +47,7 @@ See `references/troubleshooting.md`.
 ## 7. Widen the scope
 
 Move to a module, then the whole project. Consider incremental mode and a
-CI threshold. See `references/general/scoping.md`.
+CI threshold. See `references/general/scoping.md`. For a PR, run
+`scripts/digest.mjs --since <base ref> --gate` instead: it fails only on
+a changed line's own survivor, with no full-project baseline needed. See
+`references/digest.md` and `references/general/operations.md`.

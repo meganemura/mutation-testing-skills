@@ -1,0 +1,12 @@
+{
+  "schema_version": "3.0",
+  "survivors": [
+    {
+      "subject": "add",
+      "file": "src/a.ts",
+      "line": 5,
+      "operator": "ArithmeticOperator",
+      "id": "some-3.0-id"
+    }
+  ]
+}

@@ -19,7 +19,9 @@ import {
   compareBaseline,
   extractToken,
   findSubject,
+  formatGithub,
   formatText,
+  parseUnifiedDiffRanges,
   sourceHash,
   summarizeTests,
 } from './digest.mjs';
@@ -91,7 +93,7 @@ test('survivor patch, subject, tests, source_hash, rerun, and rerun_exact', () =
   });
   assert.equal(survivor.rerun, 'npx stryker run --incremental --mutate "src/a.ts"');
   assert.equal(survivor.rerun_exact, 'npx stryker run --force --mutate "src/a.ts:5:12-5:21"');
-  assert.ok(!('token' in survivor), 'survivors[] no longer carries token');
+  assert.equal(survivor.token, 'total - 1', '--format github reads the original code from token');
   assert.ok(!('diff' in survivor), 'survivors[] no longer carries diff');
 
   const expectedHash = createHash('sha256')
@@ -186,25 +188,52 @@ test('id is stable when a line is added earlier in the file', () => {
   }
 });
 
-test('the same token appearing twice gets two different ids', () => {
-  const digest = buildDigest(loadReport());
-  const boxSurvivor = digest.survivors.find((s) => s.replacement === 'this.value - step');
-  const killed = loadReport().files['src/a.ts'].mutants.find(
-    (m) => m.status === 'Killed' && m.mutatorName === 'ArithmeticOperator',
-  );
-  assert.notEqual(boxSurvivor.id, undefined);
-  // The killed twin shares (file, subject, token, operator, replacement)
-  // with the survivor above; assignIds must give it a different id.
+test('id is stable when the mutated line is re-indented', () => {
+  const report = loadReport();
+  const indented = structuredClone(report);
+  const file = indented.files['src/a.ts'];
+  const lines = file.source.split('\n');
+  // Line 5 (1-based) is `    total = total - 1;`; add 4 more leading
+  // spaces and shift that line's mutant columns by the same amount, so
+  // the mutated token itself is unchanged.
+  lines[4] = `    ${lines[4]}`;
+  file.source = lines.join('\n');
+  for (const mutant of file.mutants) {
+    if (mutant.location.start.line === 5) {
+      mutant.location.start.column += 4;
+      mutant.location.end.column += 4;
+    }
+  }
+
+  const before = buildDigest(report);
+  const after = buildDigest(indented);
+  const beforeId = before.survivors.find((s) => s.replacement === 'total + 1').id;
+  const afterId = after.survivors.find((s) => s.replacement === 'total + 1').id;
+  assert.equal(afterId, beforeId);
+});
+
+test('two mutants on the same line with the same token, operator, and replacement get different ids', () => {
+  // "total = total + step + step;" — flipping either `+` to `-` produces
+  // the same (line text, token, operator, replacement); only the column
+  // ordinal (the id's 6th material) tells them apart.
   const records = [
-    { file: 'src/a.ts', subject: 'Box#inc', token: 'this.value + step', operator: 'ArithmeticOperator', replacement: 'this.value - step' },
-    { file: 'src/a.ts', subject: 'Box#inc', token: 'this.value + step', operator: 'ArithmeticOperator', replacement: 'this.value - step' },
+    { file: 'f.ts', _line: 1, _endLine: 1, _column: 20, lineText: 'total = total + step + step;', token: 'total + step', operator: 'ArithmeticOperator', replacement: 'total - step' },
+    { file: 'f.ts', _line: 1, _endLine: 1, _column: 8, lineText: 'total = total + step + step;', token: 'total + step', operator: 'ArithmeticOperator', replacement: 'total - step' },
   ];
-  assignIds('src/a.ts', records);
+  assignIds('f.ts', records);
   assert.notEqual(records[0].id, records[1].id);
-  assert.equal(records.filter((r) => r.id === boxSurvivor.id).length, 1);
+  // Sorted by column: the one at column 8 is the file's first occurrence.
+  const first = records.find((r) => r._column === 8);
+  const second = records.find((r) => r._column === 20);
+  assert.equal(first._columnOrdinal, 0);
+  assert.equal(second._columnOrdinal, 1);
 });
 
 test('a duplicate\'s id does not change when its twin\'s status changes', () => {
+  // Fixture lines 13 and 14 are identical text ("this.value = this.value
+  // + step;"), so mutant a3 (Survived) and a4 (Killed) share (file, line
+  // text, token, operator, replacement) and differ only by the item-7
+  // occurrence ordinal below.
   const report = loadReport();
   const before = buildDigest(report);
   const beforeSurvivorId = before.survivors.find((s) => s.replacement === 'this.value - step').id;
@@ -221,6 +250,10 @@ test('a duplicate\'s id does not change when its twin\'s status changes', () => 
     (s) => s.replacement === 'this.value - step' && s.line === 13,
   );
   assert.equal(afterSurvivor.id, beforeSurvivorId);
+  const afterTwin = after.survivors.find(
+    (s) => s.replacement === 'this.value - step' && s.line === 14,
+  );
+  assert.notEqual(afterTwin.id, afterSurvivor.id, 'the repeated line is told apart by occurrence order');
 });
 
 test('summarizeTests: exactly 10 files is not truncated, 11 files is', () => {
@@ -303,13 +336,12 @@ test('a report with no new survivors exits 0', () => {
   assert.equal(result.new_survivors.length, 0);
 });
 
-test('a v2 digest\'s id matches the same survivor\'s id in a v1 (schema_version 1.0) baseline', () => {
-  const digest = buildDigest(loadReport());
-  const baselineDigest = JSON.parse(readFileSync(baselinePath, 'utf8'));
-  assert.equal(baselineDigest.schema_version, '1.0');
-  const v1Entry = baselineDigest.survivors.find((s) => s.token === 'total - 1');
-  const v2Survivor = digest.survivors.find((s) => s.replacement === 'total + 1');
-  assert.equal(v2Survivor.id, v1Entry.id, 'id must not change between schema versions');
+test('--baseline from a schema_version other than 4.0 warns and exits 2, without new or fixed', () => {
+  const cli = runCli(['fixtures/report.json', '--baseline', 'fixtures/baseline-digest-old-schema.json']);
+  assert.equal(cli.exitCode, 2);
+  assert.match(cli.stderr, /usage error/);
+  assert.match(cli.stderr, /schema_version/);
+  assert.equal(cli.stdout, '', 'a schema mismatch prints no digest');
 });
 
 test('an unreadable report file exits 2', () => {
@@ -475,4 +507,345 @@ test('unverified[]: a Survived, covered mutant with no completed test run does n
   const baseline = compareBaseline(digest, { survivors: [] });
   assert.equal(baseline.new_survivors.length, 2);
   assert.ok(!baseline.new_survivors.some((s) => s.id === unverifiedId));
+});
+
+test('parseUnifiedDiffRanges reads the "+" side of each hunk, and a pure deletion contributes no range', () => {
+  const diff = [
+    '@@ -1,2 +1,3 @@',
+    '+added line 1',
+    ' kept line',
+    '+added line 2',
+    '@@ -10,2 +11,0 @@',
+    '-removed line 1',
+    '-removed line 2',
+    '@@ -20 +19 @@',
+    '-old',
+    '+new',
+  ].join('\n');
+  assert.deepEqual(parseUnifiedDiffRanges(diff), [
+    { start: 1, end: 3 },
+    { start: 19, end: 19 },
+  ]);
+});
+
+test('formatGithub escapes %, \\r, and \\n in a value, and marks unverified as a warning', () => {
+  const digest = {
+    survivors: [
+      {
+        file: 'src/a.ts',
+        line: 5,
+        location: { start: { line: 5, column: 1 }, end: { line: 5, column: 10 } },
+        operator: 'ArithmeticOperator',
+        token: 'a % b\r\n',
+        replacement: 'a + b',
+      },
+    ],
+    no_coverage: [
+      {
+        file: 'src/b.ts',
+        line: 2,
+        location: { start: { line: 2, column: 1 }, end: { line: 2, column: 5 } },
+        operator: 'StringLiteral',
+        token: 'x',
+        replacement: 'y',
+      },
+    ],
+    unverified: [
+      {
+        file: 'src/c.ts',
+        line: 7,
+        location: { start: { line: 7, column: 1 }, end: { line: 7, column: 2 } },
+        operator: 'BooleanLiteral',
+        token: 't',
+        replacement: 'f',
+      },
+    ],
+  };
+  const out = formatGithub(digest).split('\n');
+  assert.deepEqual(out, [
+    '::error file=src/a.ts,line=5,endLine=5,title=ArithmeticOperator survived::a %25 b%0D%0A -> a + b',
+    '::error file=src/b.ts,line=2,endLine=2,title=StringLiteral survived::x -> y',
+    '::warning file=src/c.ts,line=7,endLine=7,title=unverified::no test ran for this mutant',
+  ]);
+});
+
+test('--format github via the CLI produces one workflow command per flagged mutant', () => {
+  const cli = runCli(['fixtures/report.json', '--format', 'github']);
+  assert.equal(cli.exitCode, 0);
+  const lines = cli.stdout.trim().split('\n');
+  // 3 survivors + 1 no_coverage, both rendered as `::error`.
+  assert.equal(lines.filter((l) => l.startsWith('::error')).length, 4);
+});
+
+test('--gate exits 1 when survivors remain, 3 when a mutant is unverified, 0 when neither', () => {
+  const survivorsCli = runCli(['fixtures/report.json', '--gate']);
+  assert.equal(survivorsCli.exitCode, 1);
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'digest-gate-'));
+  try {
+    const unverifiedReport = {
+      schemaVersion: '1.0',
+      projectRoot: '/repo',
+      files: {
+        'src/u.ts': {
+          source: 'export function u(x) {\n  return x + 1;\n}\n',
+          mutants: [
+            {
+              id: 'u1',
+              mutatorName: 'ArithmeticOperator',
+              replacement: 'x - 1',
+              status: 'Survived',
+              coveredBy: ['t1'],
+              testsCompleted: 0,
+              location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+            },
+          ],
+        },
+      },
+      testFiles: { 'test/u.test.ts': { tests: [{ id: 't1', name: 'u works' }] } },
+    };
+    const unverifiedPath = path.join(dir, 'unverified.json');
+    writeFileSync(unverifiedPath, JSON.stringify(unverifiedReport));
+    const unverifiedCli = runCli([unverifiedPath, '--gate']);
+    assert.equal(unverifiedCli.exitCode, 3);
+
+    const cleanReport = {
+      schemaVersion: '1.0',
+      projectRoot: '/repo',
+      files: {
+        'src/k.ts': {
+          source: 'export function k(x) {\n  return x + 1;\n}\n',
+          mutants: [
+            {
+              id: 'k1',
+              mutatorName: 'ArithmeticOperator',
+              replacement: 'x - 1',
+              status: 'Killed',
+              coveredBy: ['t1'],
+              killedBy: ['t1'],
+              testsCompleted: 1,
+              location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+            },
+          ],
+        },
+      },
+      testFiles: { 'test/k.test.ts': { tests: [{ id: 't1', name: 'k works' }] } },
+    };
+    const cleanPath = path.join(dir, 'clean.json');
+    writeFileSync(cleanPath, JSON.stringify(cleanReport));
+    const cleanCli = runCli([cleanPath, '--gate']);
+    assert.equal(cleanCli.exitCode, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--gate warns to stderr about a static mutant timeout, without failing the gate on it', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'digest-gate-static-'));
+  try {
+    const report = {
+      schemaVersion: '1.0',
+      projectRoot: '/repo',
+      files: {
+        'src/s.ts': {
+          source: 'const LIMIT = 1 + 1;\n',
+          mutants: [
+            {
+              id: 's1',
+              mutatorName: 'ArithmeticOperator',
+              replacement: '1 - 1',
+              status: 'Timeout',
+              static: true,
+              coveredBy: [],
+              location: { start: { line: 1, column: 15 }, end: { line: 1, column: 20 } },
+            },
+          ],
+        },
+      },
+      testFiles: {},
+    };
+    const reportPathHere = path.join(dir, 'static-timeout.json');
+    writeFileSync(reportPathHere, JSON.stringify(report));
+    const result = spawnSync('node', [digestPath, reportPathHere, '--gate'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, 'a timeout never fails the gate');
+    assert.match(result.stderr, /static mutant timeout/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  '--since scopes survivors, no_coverage, and unverified to a changed-line range',
+  { skip: !gitAvailable && 'git is not installed' },
+  () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'digest-since-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+
+      mkdirSync(path.join(dir, 'src'), { recursive: true });
+      const original = 'export function a(x) {\n  return x + 1;\n}\n\nexport function b(x) {\n  return x + 2;\n}\n';
+      const originalG = 'export function c(x) {\n  return x + 3;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), original);
+      writeFileSync(path.join(dir, 'src', 'g.ts'), originalG);
+      spawnSync('git', ['add', '.'], { cwd: dir });
+      spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: dir });
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+      // Only `a`'s line changes; `b`'s line 6 stays out of the diff.
+      const changed = 'export function a(x) {\n  return x + 100;\n}\n\nexport function b(x) {\n  return x + 2;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), changed);
+      // `g.ts` has no survivor at all, only a mutant Stryker killed, on
+      // its own changed line: `--since` must still count it in `summary`.
+      const changedG = 'export function c(x) {\n  return x + 300;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'g.ts'), changedG);
+
+      const report = {
+        schemaVersion: '1.0',
+        projectRoot: dir,
+        files: {
+          'src/f.ts': {
+            source: changed,
+            mutants: [
+              {
+                id: 'm1',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 100',
+                status: 'Survived',
+                coveredBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 2, column: 10 }, end: { line: 2, column: 19 } },
+              },
+              {
+                id: 'm2',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 2',
+                status: 'Survived',
+                coveredBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 6, column: 10 }, end: { line: 6, column: 17 } },
+              },
+            ],
+          },
+          'src/g.ts': {
+            source: changedG,
+            mutants: [
+              {
+                id: 'm3',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 300',
+                status: 'Killed',
+                coveredBy: ['t1'],
+                killedBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 2, column: 10 }, end: { line: 2, column: 19 } },
+              },
+            ],
+          },
+        },
+        testFiles: { 'test/f.test.ts': { tests: [{ id: 't1', name: 'f works' }] } },
+      };
+      const reportPathHere = path.join(dir, 'report.json');
+      writeFileSync(reportPathHere, JSON.stringify(report));
+
+      const cli = execFileSync('node', [digestPath, reportPathHere, '--since', ref], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      const scoped = JSON.parse(cli);
+      assert.equal(scoped.scoped, true);
+      assert.equal(scoped.stale.length, 0);
+      assert.deepEqual(scoped.survivors.map((s) => s.id), [
+        scoped.survivors.find((s) => s.line === 2).id,
+      ]);
+      // 1 survivor (`f.ts` line 2) + 1 killed (`g.ts` line 2, no survivor
+      // of its own): a file with nothing left in survivors[] must still
+      // contribute its killed count to the scoped summary.
+      assert.equal(scoped.summary.total, 2);
+      assert.equal(scoped.summary.killed, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  '--since marks a file stale, instead of filtering it, when its source no longer matches the report',
+  { skip: !gitAvailable && 'git is not installed' },
+  () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'digest-since-stale-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+
+      mkdirSync(path.join(dir, 'src'), { recursive: true });
+      const original = 'export function a(x) {\n  return x + 1;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), original);
+      spawnSync('git', ['add', '.'], { cwd: dir });
+      spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: dir });
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+      // The report describes one source; the file on disk has moved on
+      // since, so its line numbers can no longer be trusted.
+      const reportedSource = 'export function a(x) {\n  return x + 1;\n}\n';
+      const currentOnDisk = 'export function a(x) {\n  return x + 999;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), currentOnDisk);
+
+      const report = {
+        schemaVersion: '1.0',
+        projectRoot: dir,
+        files: {
+          'src/f.ts': {
+            source: reportedSource,
+            mutants: [
+              {
+                id: 'm1',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 1',
+                status: 'Survived',
+                coveredBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+              },
+            ],
+          },
+        },
+        testFiles: { 'test/f.test.ts': { tests: [{ id: 't1', name: 'f works' }] } },
+      };
+      const reportPathHere = path.join(dir, 'report.json');
+      writeFileSync(reportPathHere, JSON.stringify(report));
+
+      const result = spawnSync('node', [digestPath, reportPathHere, '--since', ref], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      const scoped = JSON.parse(result.stdout);
+      assert.equal(scoped.survivors.length, 0, 'a stale file is dropped, not filtered by a wrong line');
+      assert.deepEqual(scoped.stale, [
+        { file: 'src/f.ts', reason: 'source no longer matches the report; cannot scope by line' },
+      ]);
+      assert.match(result.stderr, /warning: src\/f\.ts/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('--since exits 2 for an unknown git ref', { skip: !gitAvailable && 'git is not installed' }, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'digest-since-badref-'));
+  try {
+    spawnSync('git', ['init', '-q'], { cwd: dir });
+    const reportPathHere = path.join(dir, 'report.json');
+    writeFileSync(reportPathHere, JSON.stringify({ schemaVersion: '1.0', files: {}, testFiles: {} }));
+    const result = spawnSync('node', [digestPath, reportPathHere, '--since', 'not-a-real-ref'], {
+      cwd: dir,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /usage error/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

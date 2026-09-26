@@ -11,31 +11,56 @@ Its `survivors[]` keys are modeled on Ruby's mutineer's own
 agent that has read mutineer's output already knows most of the shape.
 `patch` matches mutineer's `diff` in role, but carries a `git
 apply`-ready unified diff instead of a bare hunk. Stryker's report
-carries more than mutineer's, so `survivors[]` adds `location`,
+carries more than mutineer's, so `survivors[]` adds `location`, `token`,
 `replacement`, `tests`, `rerun`, `rerun_exact`, and `source_hash`.
+
+`--since` narrows the digest to a git ref's changed lines, and `--gate`
+turns it into a pass/fail check, so the same script also serves a PR's
+changed-line gate; see "Scoping to changed lines" and "The PR gate"
+below. `references/general/operations.md` sets out where each of a
+project's mutation-testing layers — an agent's own local run, this gate,
+and a nightly full run — fits.
 
 ## Run it
 
 ```
-node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>] [--format json|text] [--output <file>]
+node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>] [--since <git ref>] [--gate] [--format json|text|github] [--output <file>]
 ```
 
 - `report.json` defaults to `reports/mutation/mutation.json`. An
   incremental run's `reports/stryker-incremental.json` uses the same
   schema, so digest.mjs reads it too, including a run stopped partway.
 - `--baseline <file>`: compare this run's survivors against a digest.json
-  from a previous run, matched by `id`. Reads a `1.x` digest as well as a
-  `2.x` one; `id` did not change between schema versions.
+  from a previous run, matched by `id`. The baseline's `schema_version`
+  must be a `4.x` version, the same major version as this run's: schema
+  `4.0` changed the id's
+  own material (see `survivors[]` below), so an id from an older baseline
+  cannot match an id here. A mismatch prints no digest, warns, and exits
+  `2`, rather than silently reporting every survivor as new.
+- `--since <git ref>`: narrow `survivors[]`, `unverified[]`,
+  `no_coverage[]`, and `timeouts[]` to the mutants whose line range
+  overlaps a line `git diff --unified=0 <ref> -- <file>` added or changed
+  in the working tree, one file at a time. See "Scoping to changed
+  lines" below.
+- `--gate`: turn the digest into a pass/fail check for a PR. See "The PR
+  gate" below.
 - `--format json` (default): one line of JSON, shown below.
 - `--format text`: a short block per survivor (`file:line subject
   operator id`, the patch, `rerun`, `rerun_exact`), then one summary
   line. When `unverified[]` is not empty, one more line follows the
   summary: `N survivors ran no test; fix the measurement first. See
   unverified[].`
+- `--format github`: one GitHub Actions workflow command per flagged
+  mutant, for a check to annotate directly on the changed lines. See
+  "`--format github`" below.
 - `--output <file>`: write to a file instead of standard output.
-- Exit code: `0` on success. `1` when `--baseline` finds a new survivor.
-  `2` on a usage error: an unreadable file, a `report_schema_version`
-  that is not `1.x`, or an unknown flag.
+- Exit code: `0` on success. `1` when `--baseline` finds a new survivor,
+  or `--gate` finds a survivor or an uncovered mutant. `2` on a usage
+  error: an unreadable file, a `report_schema_version` that is not
+  `1.x`, a `--baseline` file whose `schema_version` is not `4.x`, an
+  unknown flag, or, with `--since`, a missing `git` or an unknown ref.
+  `3` when `--gate` finds an unverified mutant: a measurement failure,
+  kept apart from a real survivor so it is not read as a test failure.
 - Progress and warnings go to standard error. Standard output carries
   only the digest.
 
@@ -43,7 +68,7 @@ node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>
 
 ```jsonc
 {
-  "schema_version": "3.0",
+  "schema_version": "4.0",
   "source": { "tool": "stryker", "report_schema_version": "1.0", "disable_bail": false },
   "summary": { "total": 0, "killed": 0, "timeout": 0, "survived": 0, "no_coverage": 0, "compile_error": 0, "runtime_error": 0, "ignored": 0, "pending": 0, "unverified": 0, "score": null, "score_covered": null, "score_excluding_unverified": null },
   "survivors": [],
@@ -54,22 +79,31 @@ node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>
   "ignored": [],
   "per_source": [],
   "tests_without_kills": [],
-  "baseline": { "new_survivors": [], "fixed_survivors": [] }
+  "baseline": { "new_survivors": [], "fixed_survivors": [] },
+  "scoped": false,
+  "stale": []
 }
 ```
 
-`baseline` is present only with `--baseline`.
+`baseline` is present only with `--baseline`. `scoped` and `stale` are
+present only with `--since` (see "Scoping to changed lines" below).
 
-`schema_version` is `3.0`. It changed from `2.0` because `survivors[]`
-and `unverified[]` replaced `tests`'s flat test list with the
-`{ total, truncated, files }` summary described below, a breaking change
-to a reader that keys off the old `tests` shape. It changed from `1.0` to
-`2.0` because `survivors[]` dropped `token` and `diff` for `patch`, and
-because a run's own `rerun` key changed meaning (see `survivors[]`
-below). `id` did not change across any of these: a `3.0` digest's
-survivor carries the same `id` a `1.0` or `2.0` digest gave the same
-mutant, so a `1.0` or `2.0` baseline still matches a `3.0` run's
-survivors (see `baseline` below).
+`schema_version` is `4.0`. It changed from `3.0` because `id`'s own
+material changed: a `4.0` id is built from the mutant's enclosing line
+text instead of `subject`, and `survivors[]` and `unverified[]` regained
+a `token` field (for `--format github`'s message). Both changes are
+breaking: a `4.0` id does not match a `1.0`, `2.0`, or `3.0` digest's id
+for the same mutant, unlike every earlier bump (see "The id" below). A
+`--baseline` file whose `schema_version` is not `4.x` is rejected (see
+"Run it" above), rather than compared and silently reporting every
+survivor as new.
+
+It changed from `2.0` to `3.0` because `survivors[]` and `unverified[]`
+replaced `tests`'s flat test list with the `{ total, truncated, files }`
+summary described below, a breaking change to a reader that keys off the
+old `tests` shape. It changed from `1.0` to `2.0` because `survivors[]`
+dropped `token` and `diff` for `patch`, and because a run's own `rerun`
+key changed meaning (see `survivors[]` below).
 
 ### `summary`
 
@@ -111,20 +145,10 @@ claims (see below):
   copied from the report. Both `line` and `column` are 1-based; `end` is
   exclusive (it points just past the last character the mutant covers).
 - `operator`: Stryker's `mutatorName`.
-- `id`: a stable id. `sha1(file + "\0" + (subject ?? "") + "\0" + token +
-  "\0" + operator + "\0" + replacement)`, kept to its first 12 hex
-  digits, where `token` is the same source text `1.0` digests carried in
-  a `token` field (see below), used here only to build the id. When the
-  same tuple appears more than once in one file, each occurrence after
-  the first gets an order-of-appearance number (starting at 0) appended
-  before hashing. Neither the line nor the column feeds the hash, so
-  editing another part of the file leaves the id unchanged. The order
-  used to assign that number comes from every mutant in the file, of
-  every status, sorted by source position — not from the report's own
-  mutant order, and not from survivors alone — so an id stays stable even
-  when a duplicate elsewhere in the file changes status. This id has not
-  changed since schema `1.0`: a `1.0` digest's `id` for a mutant still
-  matches the `2.0` digest's `id` for the same mutant.
+- `id`: a stable id. See "The id" below.
+- `token`: the mutated source text, collapsed to single spaces (see
+  below). Feeds `--format github`'s message; also usable as a quick
+  before/after check without parsing `patch`.
 - `replacement`: Stryker's `replacement`.
 - `patch`: a `git apply`-ready unified diff: `--- a/<file>\n+++
   b/<file>\n@@ -<L>,<N> +<L>,<M> @@\n-<original lines>...\n+<replaced
@@ -162,6 +186,69 @@ claims (see below):
   this run: `npx stryker run --force --mutate
   "<file>:<sl>:<sc>-<el>:<ec>"`. Correct only while `source_hash` still
   matches the file; a source edit shifts or removes the range.
+
+#### The id
+
+`id` is the first 12 hex digits of a sha1 whose material, joined with
+`"\0"`, is:
+
+1. `file`: the report's key under `files`.
+2. The full text of every line the mutant's location spans, each line
+   trimmed of its own leading and trailing whitespace and, for a
+   multi-line span, joined with `"\n"`.
+3. `token` (above): the mutated text itself.
+4. `operator`: Stryker's `mutatorName`.
+5. `replacement`: Stryker's `replacement`.
+6. A column ordinal: among mutants on the *same physical line* that
+   share materials 2 through 5, the order by column, starting at 0. A
+   line can carry two mutable spots with an identical rewrite (`total =
+   total + step + step`, both `+`s flipped to `-`); this tells them
+   apart.
+7. Present only when it is still needed: an occurrence ordinal, among
+   mutants whose materials 2 through 6 all still match, in the order
+   their line appears in the file, starting at 0. A line's exact text
+   can repeat elsewhere in the file (duplicated code), each copy
+   producing an identical mutant at the same column ordinal; this tells
+   those copies apart.
+
+Neither ordinal is a raw line or column number, and neither is
+`subject`: all three would shift with unrelated indentation, an edit
+elsewhere in the file, or an unrelated rename of the enclosing function —
+exactly the instability this id exists to avoid. `subject` in particular
+was id material through schema `3.0`; it is dropped from the id in `4.0`
+(it stays as its own field, above), because the line text already
+carries most of its distinguishing power. Without `subject`, a report's
+digest and a reporter running live inside Stryker compute the same id
+straight from the same report fields, with no source scan of their own
+to keep in step.
+
+This id's material was chosen from a measurement on a 14,140-mutant
+report: keying on (file, token, operator, replacement) alone collided
+for 4,261 mutants (30%) — the same token recurs at unrelated call sites
+in a large file. Adding `subject` narrowed that to 2,324 (16%).
+Replacing `token` with the mutant's enclosing line text — keying on
+(file, line text, operator, replacement) instead — narrowed it further,
+to 1,163 (8%). This id keeps `token` in addition to the line text
+(material 3, above), and adds materials 6 and 7 to resolve what
+collisions remain: on the same 14,140-mutant report, digest.mjs measures
+557 mutants (4%) with a non-zero material-7 ordinal — mutants whose
+(file, line text, token, operator, replacement, column ordinal) all
+matched at least one other mutant in the file, so the occurrence ordinal
+was the only thing telling them apart. This is the id's known remaining
+weak point: reordering a file's duplicate lines, or adding another copy
+earlier in the file, shifts material 7, and so the id, for every copy of
+that line after the change. `--baseline` reads this as an unrelated
+survivor fixed and a new one introduced, for what was really the same
+mutant moving. There is no complete fix within a line-text key: two
+duplicate lines are, by definition, indistinguishable from their text
+alone.
+
+`id`'s schema changed once already without changing this material: a
+`1.0` digest's `id` for a mutant still matched a `2.0` or `3.0` digest's
+`id` for the same mutant. `4.0` breaks that: dropping `subject` and
+adding the line text changes every id, so a `4.0` digest's `id` does not
+match a `1.0`, `2.0`, or `3.0` digest's `id` for the same mutant (see
+"Run it" above for what `--baseline` does about this).
 
 #### How `rerun_exact`'s columns are derived
 
@@ -202,15 +289,22 @@ in `unverified[]`; fix the measurement, then rerun.
 ### `no_coverage[]`
 
 One entry per mutant with status `NoCoverage`: `{ subject, file, line,
-id, operator, token }`. No test executed this code at all.
+location, id, operator, token, replacement }`. No test executed this
+code at all. `location` and `replacement` were added in schema `4.0`, for
+`--format github` and `--since`; they carry the same meaning as in
+`survivors[]`.
 
 ### `timeouts[]`
 
 One entry per mutant with status `Timeout`: `{ subject, file, line, id,
-operator, token, status_reason }`. Stryker counts a timeout as detected,
-the same as a kill, but a short time limit can time out a mutant that a
-longer limit would kill outright. Read `status_reason` before trusting
-the count.
+operator, token, static, status_reason }`. Stryker counts a timeout as
+detected, the same as a kill, but a short time limit can time out a
+mutant that a longer limit would kill outright. Read `status_reason`
+before trusting the count. `static` (added in schema `4.0`) is copied
+from the report's own `mutant.static`. `--gate` counts a static timeout
+separately, in a warning, rather than treating it as an ordinary timeout
+(see "The PR gate" below): a static mutant's timeout is a measurement
+concern to reread, not a proven gap in the test suite.
 
 ### `invalid[]`
 
@@ -266,6 +360,82 @@ this run fixed. A survivor that was verified in the baseline run and is
 unverified in this run is left out of `fixed_survivors`: it ran no test
 this time, so its absence says nothing about a fix. Find it in this
 run's own `unverified[]`.
+
+## Scoping to changed lines
+
+`--since <ref>` narrows `survivors[]`, `unverified[]`, `no_coverage[]`,
+and `timeouts[]` to the mutants whose line range overlaps a line
+`git diff --unified=0 <ref> -- <file>` reports as added or changed in
+the working tree, one `git diff` per file in the report — every file,
+not just one with a survivor, so a file whose remaining mutants were all
+killed on a changed line still counts them. `summary` is recomputed from
+the narrowed set, and `scoped: true` is added.
+
+The report's line numbers describe the source Stryker mutated, not
+necessarily the file on disk right now. Before scoping a file,
+`--since` compares that file's current content against the report's own
+`source_hash` for it. A mismatch means the file has moved on since the
+report was built, so its line numbers can no longer be trusted: rather
+than filter it on a wrong line, `--since` drops every entry for that
+file and adds it to `stale[]`, `{ file, reason }`, with a matching
+warning on standard error. Run Stryker again before trusting `--since`
+for a file in `stale[]`.
+
+`--since` needs `git` on `PATH` and a ref that resolves to a commit; a
+missing `git` or an unknown ref exits `2` before reading the report
+further.
+
+`ignored[]`, `invalid[]`, `per_source[]`, and `tests_without_kills[]` are
+not scoped: an ignored or invalid mutant is a judgment already made in
+source, and `per_source[]` and `tests_without_kills[]` are file-level and
+suite-level views a line range does not narrow meaningfully.
+
+## The PR gate
+
+`--gate` turns the digest into a pass/fail check, typically alongside
+`--since` so the check is scoped to a PR's own changed lines:
+
+- Exit `1` when `survivors[]` or `no_coverage[]` is not empty: a changed
+  line has a mutant nothing kills.
+- Exit `3` when `unverified[]` is not empty: a changed line's mutant
+  could not be verified at all. This is kept apart from exit `1` because
+  it names a measurement failure, not a proven hole in the suite; do not
+  read it as a test failure. Fix the measurement (see
+  `references/troubleshooting.md`), then rerun.
+- Exit `0` otherwise.
+
+`timeouts[]` never fails the gate: Stryker already counts a timeout as
+detected. A `static` timeout (see `timeouts[]` above) still warrants a
+second look, since it is a measurement concern rather than a proven
+gap; `--gate` prints its count as a warning on standard error without
+failing the gate on it, so it does not silently pass as an ordinary
+kill either.
+
+## `--format github`
+
+Renders `survivors[]` and `no_coverage[]` as GitHub Actions `::error`
+workflow commands, and `unverified[]` as `::warning`, one per line, so a
+PR's check can annotate the exact line:
+
+```
+::error file=<file>,line=<line>,endLine=<end line>,title=<operator> survived::<token> -> <replacement>
+::warning file=<file>,line=<line>,endLine=<end line>,title=unverified::no test ran for this mutant
+```
+
+A `%`, a carriage return, or a newline inside a file path, `token`, or
+`replacement` is escaped per GitHub's own workflow-command rule
+(`%` → `%25`, `\r` → `%0D`, `\n` → `%0A`), so a multi-line replacement or
+a `%` in source text does not corrupt the command. `timeouts[]` is left
+out: see "The PR gate" above for why a timeout does not gate a PR either.
+
+## Schema versions
+
+| `schema_version` | Changed |
+| --- | --- |
+| `1.0` | First release. |
+| `2.0` | `survivors[]` dropped `token` and `diff` for `patch`; `rerun`'s meaning changed. `id` unchanged. |
+| `3.0` | `survivors[]` and `unverified[]`'s `tests` became `{ total, truncated, files }`. `id` unchanged. |
+| `4.0` | `id`'s material changed: dropped `subject`, added the enclosing line's text (see "The id" above). `survivors[]`, `unverified[]`, and `no_coverage[]` regained `token`; `no_coverage[]` gained `location` and `replacement`; `timeouts[]` gained `static`. Added `--since`, `--gate`, `--format github`. **`id` changed for every mutant**; a `--baseline` file must itself be a `4.x` `schema_version`. |
 
 ## Compatibility
 

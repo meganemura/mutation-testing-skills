@@ -4,12 +4,17 @@
 // `git apply`-ready patch, the covering tests, and a command that reruns
 // just that mutant. A survivor a test never actually ran goes to a
 // separate list, so an agent does not mistake a measurement gap for an
-// untested line.
-// Boundary: this script only reads a report Stryker already wrote. It does
-// not run Stryker, and it does not edit source or test files.
+// untested line. `--since` narrows that record to the lines a git ref
+// changed, and `--gate` turns it into a pass/fail check, so the same
+// script serves a PR's changed-line gate as well as a full local read.
+// Boundary: this script only reads a report Stryker already wrote, plus,
+// with `--since`, the working tree's current file content and `git diff`
+// output. It does not run Stryker, and it does not edit source or test
+// files.
 //
 // No dependency. Node 22+ standard library only.
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -95,6 +100,21 @@ export function findSubject(lines, startLine1based) {
 
 function collapseWhitespace(text) {
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The full text of every line a mutant's location spans, each line
+ * trimmed of its own leading and trailing whitespace and, for a
+ * multi-line span, joined with "\n". Used as id material instead of the
+ * mutated token alone: on a 14,140-mutant report, (file, token, operator,
+ * replacement) collided for 30% of mutants (the same token appears at
+ * unrelated call sites); a line's full text narrowed that to 8%, because
+ * it usually pins a mutant to one call site even when the token repeats
+ * within the line.
+ */
+export function lineText(lines, location) {
+  const spanned = lines.slice(location.start.line - 1, location.end.line);
+  return spanned.map((l) => (l ?? '').trim()).join('\n');
 }
 
 /** Extracts the source text a location covers (start inclusive, end exclusive). */
@@ -206,33 +226,83 @@ export function sanitizeReason(text, projectRoot) {
   return result;
 }
 
-function baseIdInput(file, subject, token, operator, replacement) {
-  return `${file}\0${subject ?? ''}\0${token}\0${operator}\0${replacement}`;
+function baseIdInput(file, lineTextValue, token, operator, replacement) {
+  return `${file}\0${lineTextValue}\0${token}\0${operator}\0${replacement}`;
 }
 
 /**
- * Assigns a stable id to every mutant record in one file. Records with the
- * same (file, subject, token, operator, replacement) tuple get an
- * appended, order-of-appearance ordinal before hashing, so the id does not
- * depend on line or column. `records` must already be sorted by source
- * position; that position order, not the report's array order or a
- * survivors-only order, is what keeps an id stable when a status changes
+ * Assigns a stable id to every mutant record in one file, from material a
+ * report and a reporter can both compute the same way: file, the
+ * enclosing line's full text (`lineText`, above), the mutated text
+ * (`token`), the operator, and the replacement. `subject` (the enclosing
+ * function or method name) is left out on purpose: the line text already
+ * carries most of its distinguishing power, and without `subject`, a
+ * report's digest and a reporter running live inside Stryker compute
+ * the same id straight from the same report fields.
+ *
+ * Neither ordinal below is a raw line or column number: both would shift
+ * with unrelated indentation or an edit elsewhere in the file, which is
+ * exactly the instability this id exists to avoid. Two ordinals break a
+ * tie instead, in this order:
+ *
+ * 1. `_columnOrdinal`: among mutants on the *same physical line* that
+ *    share (line text, token, operator, replacement), the order by
+ *    column. A line can carry two mutable spots with an identical
+ *    rewrite (`total + step + step`, both `+`s flipped to `-`).
+ * 2. `_occurrenceOrdinal`: among mutants whose (line text, token,
+ *    operator, replacement, column ordinal) still match after 1, the
+ *    order of the physical line's own appearance in the file. A line's
+ *    exact text can repeat elsewhere in the file (duplicated code), each
+ *    copy producing an identical mutant at the same column ordinal. This
+ *    ordinal is the id's known remaining weak point: reordering those
+ *    duplicate lines, or adding another copy earlier in the file, shifts
+ *    it — and so the id — for every copy after the change.
+ *
+ * `records` must already be sorted by source position (line, then
+ * column); that order, not the report's array order or a survivors-only
+ * order, is what keeps both ordinals stable when a status changes
  * elsewhere in the same file.
  */
 export function assignIds(file, records) {
-  const counts = new Map();
+  const byPhysicalLine = new Map();
   for (const r of records) {
-    const key = baseIdInput(file, r.subject, r.token, r.operator, r.replacement);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+    const lineKey = `${r._line}:${r._endLine}`;
+    if (!byPhysicalLine.has(lineKey)) byPhysicalLine.set(lineKey, []);
+    byPhysicalLine.get(lineKey).push(r);
   }
-  const seen = new Map();
+  for (const members of byPhysicalLine.values()) {
+    const withinLine = new Map();
+    for (const r of members) {
+      const key = `${r.token}\0${r.operator}\0${r.replacement}`;
+      if (!withinLine.has(key)) withinLine.set(key, []);
+      withinLine.get(key).push(r);
+    }
+    for (const group of withinLine.values()) {
+      group.sort((a, b) => a._column - b._column);
+      group.forEach((r, i) => {
+        r._columnOrdinal = i;
+      });
+    }
+  }
+
+  const byLineTextGroup = new Map();
   for (const r of records) {
-    const key = baseIdInput(file, r.subject, r.token, r.operator, r.replacement);
-    let hashInput = key;
-    if (counts.get(key) > 1) {
-      const ordinal = seen.get(key) ?? 0;
-      seen.set(key, ordinal + 1);
-      hashInput = `${key}\0${ordinal}`;
+    const key = `${baseIdInput(file, r.lineText, r.token, r.operator, r.replacement)}\0${r._columnOrdinal}`;
+    if (!byLineTextGroup.has(key)) byLineTextGroup.set(key, []);
+    byLineTextGroup.get(key).push(r);
+  }
+  for (const group of byLineTextGroup.values()) {
+    if (group.length > 1) {
+      group.forEach((r, i) => {
+        r._occurrenceOrdinal = i;
+      });
+    }
+  }
+
+  for (const r of records) {
+    let hashInput = `${baseIdInput(file, r.lineText, r.token, r.operator, r.replacement)}\0${r._columnOrdinal}`;
+    if (r._occurrenceOrdinal !== undefined) {
+      hashInput = `${hashInput}\0${r._occurrenceOrdinal}`;
     }
     r.id = createHash('sha1').update(hashInput).digest('hex').slice(0, 12);
   }
@@ -336,6 +406,10 @@ export function buildDigest(report) {
   const perSource = [];
   const killedTestIds = new Set();
   let unverifiedCount = 0;
+  // Every mutant, of every status, with just enough to re-derive `summary`
+  // after `--since` narrows the digest to a set of changed-line ranges.
+  // Internal: stripped from the digest before it is printed (see `run`).
+  const mutantIndex = [];
 
   for (const [file, fileReport] of Object.entries(report.files ?? {})) {
     const lines = fileReport.source.split('\n');
@@ -346,9 +420,11 @@ export function buildDigest(report) {
         mutant,
         file,
         _line: mutant.location.start.line,
+        _endLine: mutant.location.end.line,
         _column: mutant.location.start.column,
         subject: findSubject(lines, mutant.location.start.line),
         token: extractToken(lines, mutant.location),
+        lineText: lineText(lines, mutant.location),
         operator: mutant.mutatorName,
         replacement: mutant.replacement ?? '',
       }))
@@ -373,6 +449,7 @@ export function buildDigest(report) {
       }
       for (const testId of mutant.killedBy ?? []) killedTestIds.add(testId);
 
+      let entryUnverified = false;
       if (mutant.status === 'Survived') {
         const tests = summarizeTests(
           (mutant.coveredBy ?? []).map((id) => testIndex.get(id)).filter(Boolean),
@@ -383,6 +460,7 @@ export function buildDigest(report) {
         // from survivors[] so an agent does not spend a test-writing pass
         // on a mutant no test tried.
         const isUnverified = (mutant.coveredBy?.length ?? 0) > 0 && mutant.testsCompleted === 0;
+        entryUnverified = isUnverified;
         if (isUnverified) unverifiedCount += 1;
         const entry = {
           subject: r.subject,
@@ -391,6 +469,7 @@ export function buildDigest(report) {
           location: mutant.location,
           operator: r.operator,
           id: r.id,
+          token: r.token,
           replacement: r.replacement,
           patch: buildPatch(file, lines, mutant.location, r.replacement),
           source_hash: fileSourceHash,
@@ -406,9 +485,11 @@ export function buildDigest(report) {
           subject: r.subject,
           file,
           line: r._line,
+          location: mutant.location,
           id: r.id,
           operator: r.operator,
           token: r.token,
+          replacement: r.replacement,
           _line: r._line,
           _column: r._column,
         });
@@ -420,6 +501,7 @@ export function buildDigest(report) {
           id: r.id,
           operator: r.operator,
           token: r.token,
+          static: mutant.static ?? false,
           status_reason: sanitizeReason(mutant.statusReason, projectRoot),
           _line: r._line,
           _column: r._column,
@@ -448,6 +530,14 @@ export function buildDigest(report) {
           _column: r._column,
         });
       }
+
+      mutantIndex.push({
+        file,
+        status: mutant.status,
+        start: r._line,
+        end: r._endLine,
+        unverified: entryUnverified,
+      });
     }
 
     const detected = perSourceCounts.killed + perSourceCounts.timeout;
@@ -496,7 +586,7 @@ export function buildDigest(report) {
   perSource.sort(compareBy([(r) => r.file]));
 
   return {
-    schema_version: '3.0',
+    schema_version: '4.0',
     source: {
       tool: 'stryker',
       report_schema_version: report.schemaVersion,
@@ -527,13 +617,19 @@ export function buildDigest(report) {
     ignored: ignored.map(stripInternal),
     per_source: perSource,
     tests_without_kills: testsWithoutKills,
+    // Internal: every mutant's file and line range, for `--since` to
+    // recompute `summary` after scoping. `run()` deletes this before the
+    // digest is printed; it is not part of the schema.
+    _mutantIndex: mutantIndex,
   };
 }
 
 // mutineer's `survivors[]` keys were the model for `subject`, `file`,
-// `line`, `operator`, and `id`; `token` matched a baseline survivor by its
-// source text once, but a survivor no longer carries `token` (see
-// `patch`), so a baseline match stays on `id` alone.
+// `line`, `operator`, and `id`; a baseline match stays on `id` alone, not
+// on `token`: `token` was dropped from `survivors[]` once, then restored
+// for `--format github`'s "<original> -> <replacement>" message, but the
+// id it now feeds is already stable across a re-indented or re-ordered
+// file, so a baseline match does not need it too.
 const BASELINE_KEYS = ['subject', 'file', 'line', 'operator', 'id'];
 
 function pickBaselineFields(entry) {
@@ -595,6 +691,208 @@ export function formatText(digest) {
   return lines.join('\n');
 }
 
+/** Escapes a value for a GitHub Actions workflow command, per its own rule: `%`, then `\r`, then `\n`. */
+function escapeGithubValue(text) {
+  return String(text).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+}
+
+function githubCommand(level, entry, title, message) {
+  const file = escapeGithubValue(entry.file);
+  const endLine = entry.location.end.line;
+  return (
+    `::${level} file=${file},line=${entry.line},endLine=${endLine},` +
+    `title=${escapeGithubValue(title)}::${escapeGithubValue(message)}`
+  );
+}
+
+/**
+ * Renders the digest as GitHub Actions workflow commands, one per line, so
+ * a PR's check annotates the exact line a mutant survived on.
+ * `survivors[]` and `no_coverage[]` become `::error`; `unverified[]`
+ * becomes `::warning`, since it names a measurement gap, not a proven
+ * hole. `timeouts[]` is left out: Stryker already counts a timeout as
+ * detected, so `--gate` does not fail on it either (see `run`).
+ */
+export function formatGithub(digest) {
+  const lines = [];
+  for (const s of digest.survivors) {
+    lines.push(githubCommand('error', s, `${s.operator} survived`, `${s.token} -> ${s.replacement}`));
+  }
+  for (const c of digest.no_coverage) {
+    lines.push(githubCommand('error', c, `${c.operator} survived`, `${c.token} -> ${c.replacement}`));
+  }
+  for (const u of digest.unverified) {
+    lines.push(githubCommand('warning', u, 'unverified', 'no test ran for this mutant'));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Parses a `git diff --unified=0` hunk header's "+" side into the
+ * 1-based, inclusive line ranges it added or changed in the current file.
+ * A pure deletion (a "+0" count) contributes no range: there is no line
+ * left in the current file to flag.
+ */
+export function parseUnifiedDiffRanges(diffText) {
+  const ranges = [];
+  const hunkHeader = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm;
+  let m;
+  while ((m = hunkHeader.exec(diffText)) !== null) {
+    const start = Number(m[1]);
+    const count = m[2] !== undefined ? Number(m[2]) : 1;
+    if (count === 0) continue;
+    ranges.push({ start, end: start + count - 1 });
+  }
+  return ranges;
+}
+
+function rangesOverlap(start, end, ranges) {
+  return ranges.some((r) => start <= r.end && end >= r.start);
+}
+
+/**
+ * Narrows a digest to the mutants whose line range overlaps a
+ * `--since`-derived set of changed-line ranges, one array per file, and
+ * recomputes `summary` from the narrowed set (`_mutantIndex`, stripped
+ * before the digest is printed). A file the caller has marked stale (its
+ * current content no longer matches `source_hash`) is dropped from every
+ * list instead of filtered: the report's line numbers describe a source
+ * that file no longer has, so trusting them would filter on the wrong
+ * lines.
+ */
+export function applySince(digest, changedRangesByFile, staleFiles) {
+  const rangesFor = (file) => changedRangesByFile.get(file) ?? [];
+
+  const filterRanged = (entries) =>
+    entries.filter((e) => {
+      if (staleFiles.has(e.file)) return false;
+      const start = e.location ? e.location.start.line : e.line;
+      const end = e.location ? e.location.end.line : e.line;
+      return rangesOverlap(start, end, rangesFor(e.file));
+    });
+
+  const scopedIndex = (digest._mutantIndex ?? []).filter(
+    (m) => !staleFiles.has(m.file) && rangesOverlap(m.start, m.end, rangesFor(m.file)),
+  );
+
+  return {
+    ...digest,
+    scoped: true,
+    summary: summarizeMutantIndex(scopedIndex),
+    survivors: filterRanged(digest.survivors),
+    unverified: filterRanged(digest.unverified),
+    no_coverage: filterRanged(digest.no_coverage),
+    timeouts: filterRanged(digest.timeouts),
+    stale: [...staleFiles].sort().map((file) => ({
+      file,
+      reason: 'source no longer matches the report; cannot scope by line',
+    })),
+  };
+}
+
+/** Rebuilds a `summary` object from a subset of `_mutantIndex`, the same formulas `buildDigest` uses. */
+function summarizeMutantIndex(mutantIndex) {
+  const counts = {
+    killed: 0,
+    timeout: 0,
+    survived: 0,
+    no_coverage: 0,
+    compile_error: 0,
+    runtime_error: 0,
+    ignored: 0,
+    pending: 0,
+  };
+  let unverifiedCount = 0;
+  for (const m of mutantIndex) {
+    const key = STATUS_TO_SUMMARY_KEY[m.status];
+    if (key) counts[key] += 1;
+    if (m.unverified) unverifiedCount += 1;
+  }
+  const total = mutantIndex.length;
+  const detected = counts.killed + counts.timeout;
+  const validTotal = detected + counts.survived + counts.no_coverage;
+  const coveredTotal = detected + counts.survived;
+  const validExcludingUnverified = validTotal - unverifiedCount;
+  return {
+    total,
+    ...counts,
+    unverified: unverifiedCount,
+    score: validTotal ? round2((detected / validTotal) * 100) : null,
+    score_covered: coveredTotal ? round2((detected / coveredTotal) * 100) : null,
+    score_excluding_unverified: validExcludingUnverified
+      ? round2((detected / validExcludingUnverified) * 100)
+      : null,
+  };
+}
+
+function gitAvailable(cwd) {
+  try {
+    execFileSync('git', ['--version'], { cwd, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitRefExists(ref, cwd) {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], { cwd, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds `--since`'s two inputs for `applySince`: the changed-line ranges
+ * `git diff --unified=0 <ref> -- <file>` reports for every file in the
+ * report, and the set of files whose current on-disk content no longer
+ * matches the report's own `source_hash` (so `applySince` must drop them,
+ * not filter them on a stale line number). This runs over every file in
+ * `report.files`, not just a file with a survivor: `summary` (recomputed
+ * from `_mutantIndex`, which also covers every file) must count a killed
+ * mutant on a changed line too, or a file with no remaining survivor
+ * would silently drop its killed count from the scoped score. Only
+ * `readFileSync` and `execFileSync('git', ...)` touch the filesystem or a
+ * subprocess; both are confined to this function so `applySince` itself
+ * stays pure and testable without a real git repository.
+ */
+function scopeSince(digest, report, ref, cwd) {
+  const files = Object.keys(report.files ?? {});
+
+  const changedRangesByFile = new Map();
+  const staleFiles = new Set();
+
+  for (const file of files) {
+    const reportSource = report.files?.[file]?.source;
+    const reportedHash = reportSource !== undefined ? sourceHash(reportSource) : undefined;
+    let currentContent;
+    try {
+      currentContent = readFileSync(`${cwd}/${file}`, 'utf8');
+    } catch {
+      staleFiles.add(file);
+      continue;
+    }
+    if (reportedHash === undefined || sourceHash(currentContent) !== reportedHash) {
+      staleFiles.add(file);
+      continue;
+    }
+    let diffText;
+    try {
+      diffText = execFileSync('git', ['diff', '--unified=0', ref, '--', file], {
+        cwd,
+        encoding: 'utf8',
+      });
+    } catch {
+      changedRangesByFile.set(file, []);
+      continue;
+    }
+    changedRangesByFile.set(file, parseUnifiedDiffRanges(diffText));
+  }
+
+  return applySince(digest, changedRangesByFile, staleFiles);
+}
+
 export class UsageError extends Error {}
 
 function readJsonFile(path) {
@@ -616,7 +914,7 @@ function readJsonFile(path) {
  * calling `process.exit`. Kept separate from `main()` so tests can call it
  * in-process.
  */
-export function run(argv) {
+export function run(argv, { cwd = process.cwd() } = {}) {
   let parsed;
   try {
     parsed = parseArgs({
@@ -627,6 +925,8 @@ export function run(argv) {
         baseline: { type: 'string' },
         format: { type: 'string', default: 'json' },
         output: { type: 'string' },
+        since: { type: 'string' },
+        gate: { type: 'boolean', default: false },
       },
     });
   } catch (err) {
@@ -635,18 +935,54 @@ export function run(argv) {
 
   const reportPath = parsed.positionals[0] ?? DEFAULT_REPORT_PATH;
   const format = parsed.values.format;
-  if (format !== 'json' && format !== 'text') {
+  if (format !== 'json' && format !== 'text' && format !== 'github') {
     return { exitCode: 2, stderr: `usage error: unknown --format ${format}\n`, stdout: '' };
   }
 
   let digest;
+  let stderr = '';
   try {
     const report = readJsonFile(reportPath);
     digest = buildDigest(report);
+
+    if (parsed.values.since) {
+      if (!gitAvailable(cwd)) {
+        return { exitCode: 2, stderr: 'usage error: --since needs git, and it is not on PATH\n', stdout: '' };
+      }
+      if (!gitRefExists(parsed.values.since, cwd)) {
+        return {
+          exitCode: 2,
+          stderr: `usage error: --since ref not found: ${parsed.values.since}\n`,
+          stdout: '',
+        };
+      }
+      digest = scopeSince(digest, report, parsed.values.since, cwd);
+      if (digest.stale.length > 0) {
+        for (const s of digest.stale) {
+          stderr += `warning: ${s.file}: ${s.reason}\n`;
+        }
+      }
+    }
+
     if (parsed.values.baseline) {
       const baselineDigest = readJsonFile(parsed.values.baseline);
+      // A minor bump within 4.x only adds a key (see "Compatibility" in
+      // digest.md), so it does not change `id`; only the major version,
+      // where `id`'s own material last changed, needs to match.
+      if (typeof baselineDigest.schema_version !== 'string' || !baselineDigest.schema_version.startsWith('4.')) {
+        return {
+          exitCode: 2,
+          stderr:
+            `usage error: --baseline schema_version ${String(baselineDigest.schema_version)} ` +
+            `does not match this digest's 4.x; the id's material changed, so an id from an ` +
+            `older baseline cannot match an id here\n`,
+          stdout: '',
+        };
+      }
       digest.baseline = compareBaseline(digest, baselineDigest);
     }
+
+    delete digest._mutantIndex;
   } catch (err) {
     if (err instanceof UsageError) {
       return { exitCode: 2, stderr: `usage error: ${err.message}\n`, stdout: '' };
@@ -654,18 +990,38 @@ export function run(argv) {
     throw err;
   }
 
-  const body = format === 'text' ? formatText(digest) : JSON.stringify(digest);
+  if (parsed.values.gate) {
+    const staticTimeouts = digest.timeouts.filter((t) => t.static).length;
+    if (staticTimeouts > 0) {
+      stderr +=
+        `warning: ${staticTimeouts} static mutant timeout(s); a static mutant's timeout is a ` +
+        `measurement concern to reread, not a proven gap (see digest.md)\n`;
+    }
+  }
+
+  const body =
+    format === 'text' ? formatText(digest) : format === 'github' ? formatGithub(digest) : JSON.stringify(digest);
   const output = `${body}\n`;
 
   if (parsed.values.output) {
     writeFileSync(parsed.values.output, output);
   }
 
-  const exitCode = digest.baseline && digest.baseline.new_survivors.length > 0 ? 1 : 0;
+  let exitCode = digest.baseline && digest.baseline.new_survivors.length > 0 ? 1 : 0;
+  if (parsed.values.gate) {
+    if (digest.unverified.length > 0) {
+      exitCode = 3;
+    } else if (digest.survivors.length > 0 || digest.no_coverage.length > 0) {
+      exitCode = 1;
+    } else {
+      exitCode = 0;
+    }
+  }
+
   return {
     exitCode,
     stdout: parsed.values.output ? '' : output,
-    stderr: '',
+    stderr,
   };
 }
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "4.0",
   "survivors": [
     {
       "subject": "add",
@@ -7,7 +7,7 @@
       "line": 5,
       "operator": "ArithmeticOperator",
       "token": "total - 1",
-      "id": "fc9543b509d7"
+      "id": "7e29b57b81eb"
     },
     {
       "subject": "double",
