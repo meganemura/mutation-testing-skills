@@ -31,9 +31,7 @@ Confirm: rerun with `--verbose`; the load error and the
 `coverage skipped for …` lines disappear, and `summary.no_coverage`
 drops to the lines no test truly executes.
 
-Report this to mutineer: a project whose tests need a load path outside
-`lib` is common, and the ordinary run gives no signal beyond
-`--verbose`, short of a score of N/A.
+Reported to mutineer: https://github.com/davidteren/mutineer/issues/119
 
 ## 1a. Coverage works, but every mutant is `errored` with a `LoadError`
 
@@ -57,18 +55,32 @@ shows the `LoadError`.
 Symptom: `per_source[]` lists a test file among the sources, and the
 score reads far lower than expected.
 
-Cause: `--test` takes one value. A second path placed after it on the
-command line is read as a positional argument, that is, as a source to
-mutate.
+Cause: `--test` takes one file per flag, as the help text says
+("repeatable"). A second path placed after it on the command line is a
+positional argument, that is, a source to mutate. This is mutineer's
+design: pass `--test A --test B`.
 
-Fix: give each test file its own `--test` flag. Watch a shell's own
-word-splitting too: an unquoted variable holding several paths, expanded
-into one `--test`, hits the same bug.
+Fix: give each test file its own `--test` flag. A shell glob such as
+`--test test/*_test.rb`, or a variable that holds several paths, expands
+to several paths after one flag and hits this.
 
 Confirm: `per_source[]` lists only production source files.
 
-Report this to mutineer: passing a second test path after `--test`
-silently changes what mutineer does with it, with no warning.
+## 2a. Run without `--test`, a `test_*.rb` file is not found
+
+Symptom: mutineer prints `no test found by convention for <source>;
+skipping`, then `no test files found by convention; pass --test or add
+tests`, and exits 2.
+
+Cause: without `--test`, mutineer pairs each source with a test by
+convention, and for Minitest the convention is `test/<name>_test.rb`
+(and `test/lib/<name>_test.rb`). Minitest's own `Minitest::TestTask`
+also finds `test/**/test_*.rb`, and a suite that names its tests that
+way gets no pairing.
+
+Fix: pass each test file with its own `--test` flag.
+
+Reported to mutineer: https://github.com/davidteren/mutineer/issues/120
 
 ## 3. A test using `capture_subprocess_io` always fails
 
