@@ -280,3 +280,20 @@ child process that waits for its parent to kill it then keeps running.
 Fix: give the child process a wait limit of its own, so it exits on its
 own once that limit passes. Check for leftover processes with
 `pgrep -fl .stryker-tmp`.
+
+## The command runner under `node --test`: every mutant survives
+
+Symptom: Stryker runs from inside a `node --test` process, for example
+an end-to-end test of a Stryker setup. The command runner's own
+`node --test` command then reports every mutant as survived, and the
+killed count is 0.
+
+Cause: the outer `node --test` sets `NODE_TEST_CONTEXT` and
+`NODE_TEST_WORKER_ID` in its environment. The command runner's child
+process inherits them, and the inner `node --test` then reports to the
+outer process instead of failing on its own. Its exit code stays 0, so
+Stryker counts each mutant as survived.
+
+Fix: remove `NODE_TEST_CONTEXT` and `NODE_TEST_WORKER_ID` from the
+environment of the process that starts Stryker. Confirm the fix: the
+killed count is above 0.
