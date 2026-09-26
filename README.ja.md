@@ -28,9 +28,11 @@ npx skills add meganemura/mutation-testing-skills --skill stryker -g -a claude-c
 ```
 
 次の 2 つは、mutineer の作者自身の skill と、このリポジトリの skill を、両方とも Claude Code のすべてのプロジェクトで使えるように入れます。
+作者の skill は URL から入れます。
+`davidteren/mutineer` として入れると、docs のサイト全体が一緒に入ります。
 
 ```
-npx skills add davidteren/mutineer --skill mutineer -g -a claude-code
+npx skills add https://davidteren.github.io/mutineer/skill.md -g -a claude-code
 npx skills add meganemura/mutation-testing-skills --skill mutineer-practice -g -a claude-code
 ```
 

@@ -33,10 +33,11 @@ npx skills add meganemura/mutation-testing-skills --skill stryker -g -a claude-c
 ```
 
 Install the mutineer skills, the author's own and this repository's, for
-Claude Code, for all of your projects:
+Claude Code, for all of your projects. The author's skill installs from its
+URL: installed as `davidteren/mutineer`, it brings the whole docs site with it.
 
 ```
-npx skills add davidteren/mutineer --skill mutineer -g -a claude-code
+npx skills add https://davidteren.github.io/mutineer/skill.md -g -a claude-code
 npx skills add meganemura/mutation-testing-skills --skill mutineer-practice -g -a claude-code
 ```
 

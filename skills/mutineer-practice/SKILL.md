@@ -6,7 +6,7 @@ description: Set up and run mutineer, a mutation testing tool for Ruby projects 
 # mutineer, in practice
 
 This skill supplements the skill mutineer's author publishes. That skill
-(`npx skills add davidteren/mutineer --skill mutineer`, or
+(`npx skills add https://davidteren.github.io/mutineer/skill.md`, or
 [its source](https://github.com/davidteren/mutineer/blob/v1.0.2/docs/skill.md))
 is the source of truth for the CLI, the agent loop, and the exit codes.
 This skill covers the setup steps, the pitfalls a first run meets, and
