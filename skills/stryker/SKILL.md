@@ -34,7 +34,7 @@ and `references/general/concepts.md` for what each term means.
 
 ## 5. Triage the survivors
 
-Classify each entry in `digest.mjs`'s `survivors[]`, in the order
+Classify each `survivor` entry `digest.mjs` reports, in the order
 `references/general/triage.md` gives. After you add a test, confirm the
 kill with that entry's `rerun` command. When you judge a mutant
 equivalent, disable it with `// Stryker disable next-line <operator>:

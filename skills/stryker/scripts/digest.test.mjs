@@ -20,6 +20,7 @@ import {
   extractToken,
   findSubject,
   formatGithub,
+  formatJsonl,
   formatText,
   parseUnifiedDiffRanges,
   sourceHash,
@@ -322,7 +323,13 @@ test('--baseline reports new and fixed survivors, and exits 1 on new survivors',
   assert.equal(result.fixed_survivors.length, 1);
   assert.equal(result.fixed_survivors[0].id, 'aaaaaaaaaaaa');
 
-  const cli = runCli(['fixtures/report.json', '--baseline', 'fixtures/baseline-digest.json']);
+  const cli = runCli([
+    'fixtures/report.json',
+    '--baseline',
+    'fixtures/baseline-digest.json',
+    '--format',
+    'json',
+  ]);
   assert.equal(cli.exitCode, 1);
   const parsed = JSON.parse(cli.stdout);
   assert.equal(parsed.baseline.new_survivors.length, 2);
@@ -749,7 +756,7 @@ test(
       const reportPathHere = path.join(dir, 'report.json');
       writeFileSync(reportPathHere, JSON.stringify(report));
 
-      const cli = execFileSync('node', [digestPath, reportPathHere, '--since', ref], {
+      const cli = execFileSync('node', [digestPath, reportPathHere, '--since', ref, '--format', 'json'], {
         cwd: dir,
         encoding: 'utf8',
       });
@@ -817,7 +824,7 @@ test(
       const reportPathHere = path.join(dir, 'report.json');
       writeFileSync(reportPathHere, JSON.stringify(report));
 
-      const result = spawnSync('node', [digestPath, reportPathHere, '--since', ref], {
+      const result = spawnSync('node', [digestPath, reportPathHere, '--since', ref, '--format', 'json'], {
         cwd: dir,
         encoding: 'utf8',
       });
@@ -849,3 +856,231 @@ test('--since exits 2 for an unknown git ref', { skip: !gitAvailable && 'git is 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('formatJsonl: stale files and fixed survivors are lines, and a survivor line says whether it is new', () => {
+  const digest = buildDigest(loadReport());
+  const [first, ...rest] = digest.survivors;
+  digest.scoped = true;
+  digest.stale = [{ file: 'src/c.ts', reason: 'source changed since the report' }];
+  digest.baseline = {
+    new_survivors: [{ id: first.id }],
+    fixed_survivors: [{ id: 'aaaaaaaaaaaa', file: 'src/a.ts', line: 1, operator: 'StringLiteral' }],
+  };
+  const lines = formatJsonl(digest).split('\n').map((l) => JSON.parse(l));
+
+  assert.deepEqual(lines[1], { kind: 'stale', file: 'src/c.ts', reason: 'source changed since the report' });
+  const survivorLines = lines.filter((l) => l.kind === 'survivor');
+  assert.equal(survivorLines.find((l) => l.id === first.id).new, true);
+  for (const s of rest) assert.equal(survivorLines.find((l) => l.id === s.id).new, false);
+  assert.deepEqual(lines.find((l) => l.kind === 'fixed_survivor'), {
+    kind: 'fixed_survivor', id: 'aaaaaaaaaaaa', file: 'src/a.ts', line: 1, operator: 'StringLiteral',
+  });
+  const summary = lines.at(-1);
+  assert.equal(summary.kind, 'summary');
+  assert.equal(summary.stale_count, 1);
+  assert.equal(summary.new_survivors, 1);
+  assert.equal(summary.fixed_survivors, 1);
+});
+
+test('formatJsonl: one line per item, kind order survivor/unverified/timeout/no_coverage/ignored/invalid/test_without_kills, summary last', () => {
+  const digest = buildDigest(loadReport());
+  const lines = formatJsonl(digest).split('\n').map((l) => JSON.parse(l));
+
+  assert.equal(lines[0].kind, 'run');
+  assert.equal(lines[0].schema_version, '5.0');
+  assert.equal(lines[0].tool, 'stryker');
+  assert.equal(lines[0].report_schema_version, '1.0');
+  assert.equal(lines[0].disable_bail, false);
+
+  assert.equal(lines.at(-1).kind, 'summary');
+  assert.equal(lines.at(-1).total, 10);
+
+  const kinds = lines.slice(1, -1).map((l) => l.kind);
+  const kindOrder = ['survivor', 'unverified', 'timeout', 'no_coverage', 'ignored', 'invalid', 'test_without_kills'];
+  const seen = [...new Set(kinds)];
+  assert.deepEqual(
+    seen,
+    kindOrder.filter((k) => seen.includes(k)),
+    'each kind that appears keeps the fixed order',
+  );
+
+  // Kind counts match the corresponding arrays in --format json.
+  assert.equal(kinds.filter((k) => k === 'survivor').length, digest.survivors.length);
+  assert.equal(kinds.filter((k) => k === 'timeout').length, digest.timeouts.length);
+  assert.equal(kinds.filter((k) => k === 'no_coverage').length, digest.no_coverage.length);
+  assert.equal(kinds.filter((k) => k === 'ignored').length, digest.ignored.length);
+  assert.equal(kinds.filter((k) => k === 'invalid').length, digest.invalid.length);
+  assert.equal(kinds.filter((k) => k === 'test_without_kills').length, digest.tests_without_kills.length);
+
+  // A survivor line carries the same fields as --format json's survivors[], plus `kind`.
+  const survivorLine = lines.find((l) => l.kind === 'survivor' && l.replacement === 'total + 1');
+  const jsonSurvivor = digest.survivors.find((s) => s.replacement === 'total + 1');
+  const { kind: _kind, ...survivorFields } = survivorLine;
+  assert.deepEqual(survivorFields, jsonSurvivor);
+});
+
+test('--format jsonl is the default, and --format json still produces the single-object shape', () => {
+  const jsonlCli = runCli(['fixtures/report.json']);
+  const jsonlLines = jsonlCli.stdout.trim().split('\n');
+  assert.ok(jsonlLines.length > 2, 'jsonl output carries more than the run and summary lines alone');
+  assert.equal(JSON.parse(jsonlLines[0]).kind, 'run');
+  assert.equal(JSON.parse(jsonlLines.at(-1)).kind, 'summary');
+
+  const jsonCli = runCli(['fixtures/report.json', '--format', 'json']);
+  const parsed = JSON.parse(jsonCli.stdout);
+  assert.equal(parsed.schema_version, '5.0');
+  assert.ok(Array.isArray(parsed.survivors));
+});
+
+test('--baseline reads a JSONL baseline file the same as its JSON twin', () => {
+  const jsonlCli = runCli([
+    'fixtures/report.json',
+    '--baseline',
+    'fixtures/baseline-digest.jsonl',
+    '--format',
+    'json',
+  ]);
+  const jsonCli = runCli([
+    'fixtures/report.json',
+    '--baseline',
+    'fixtures/baseline-digest.json',
+    '--format',
+    'json',
+  ]);
+  assert.equal(jsonlCli.exitCode, jsonCli.exitCode);
+  assert.deepEqual(
+    JSON.parse(jsonlCli.stdout).baseline,
+    JSON.parse(jsonCli.stdout).baseline,
+  );
+});
+
+test(
+  '--since counts an untracked file as changed on every line, instead of silently passing its survivors',
+  { skip: !gitAvailable && 'git is not installed' },
+  () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'digest-since-untracked-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+      mkdirSync(path.join(dir, 'src'), { recursive: true });
+      writeFileSync(path.join(dir, 'README.md'), 'placeholder\n');
+      spawnSync('git', ['add', 'README.md'], { cwd: dir });
+      spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: dir });
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+      // src/new.ts is never `git add`ed: untracked.
+      const source = 'export function n(x) {\n  return x + 1;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'new.ts'), source);
+
+      const report = {
+        schemaVersion: '1.0',
+        projectRoot: dir,
+        files: {
+          'src/new.ts': {
+            source,
+            mutants: [
+              {
+                id: 'n1',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 1',
+                status: 'Survived',
+                coveredBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+              },
+            ],
+          },
+        },
+        testFiles: { 'test/new.test.ts': { tests: [{ id: 't1', name: 'n works' }] } },
+      };
+      const reportPathHere = path.join(dir, 'report.json');
+      writeFileSync(reportPathHere, JSON.stringify(report));
+
+      const result = spawnSync(
+        'node',
+        [digestPath, reportPathHere, '--since', ref, '--gate', '--format', 'json'],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      const scoped = JSON.parse(result.stdout);
+      assert.equal(scoped.stale.length, 0);
+      assert.equal(scoped.survivors.length, 1, 'an untracked file counts every line as changed');
+      assert.equal(result.status, 1, 'the gate fails on the untracked file\'s survivor');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  '--since marks a file stale when git diff itself fails for it, and --gate exits 3',
+  { skip: !gitAvailable && 'git is not installed' },
+  () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'digest-since-diff-fails-'));
+    try {
+      spawnSync('git', ['init', '-q'], { cwd: dir });
+      spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+      mkdirSync(path.join(dir, 'src'), { recursive: true });
+      const original = 'export function a(x) {\n  return x + 1;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), original);
+      spawnSync('git', ['add', 'src/f.ts'], { cwd: dir });
+      spawnSync('git', ['commit', '-q', '-m', 'initial'], { cwd: dir });
+      const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).trim();
+
+      // A real content change, so `git diff` must read the committed blob
+      // to build a hunk (an unchanged file needs no blob read, and git
+      // diff would exit 0 with no output even with the blob gone). The
+      // report's own `source` is the new content, so the hash check
+      // passes and this run reaches `git diff` at all.
+      const source = 'export function a(x) {\n  return x + 100;\n}\n';
+      writeFileSync(path.join(dir, 'src', 'f.ts'), source);
+
+      // Delete the committed blob's loose object so `git diff <ref> -- src/f.ts`
+      // fails trying to read it, without touching the index (`ls-files`
+      // still reports the file tracked) or the working tree (its content
+      // still matches the report's `source_hash`).
+      const blobArg = `${ref}:src/f.ts`;
+      const blob = execFileSync('git', ['rev-parse', blobArg], { cwd: dir, encoding: 'utf8' }).trim();
+      rmSync(path.join(dir, '.git', 'objects', blob.slice(0, 2), blob.slice(2)));
+
+      const report = {
+        schemaVersion: '1.0',
+        projectRoot: dir,
+        files: {
+          'src/f.ts': {
+            source,
+            mutants: [
+              {
+                id: 'm1',
+                mutatorName: 'ArithmeticOperator',
+                replacement: 'x - 1',
+                status: 'Survived',
+                coveredBy: ['t1'],
+                testsCompleted: 1,
+                location: { start: { line: 2, column: 10 }, end: { line: 2, column: 15 } },
+              },
+            ],
+          },
+        },
+        testFiles: { 'test/f.test.ts': { tests: [{ id: 't1', name: 'f works' }] } },
+      };
+      const reportPathHere = path.join(dir, 'report.json');
+      writeFileSync(reportPathHere, JSON.stringify(report));
+
+      const result = spawnSync(
+        'node',
+        [digestPath, reportPathHere, '--since', ref, '--gate', '--format', 'json'],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      const scoped = JSON.parse(result.stdout);
+      assert.equal(scoped.stale.length, 1);
+      assert.equal(scoped.stale[0].file, 'src/f.ts');
+      assert.match(scoped.stale[0].reason, /git diff failed/);
+      assert.equal(result.status, 3, 'a stale file, like an unverified mutant, is a measurement gap');
+      assert.match(result.stderr, /warning: src\/f\.ts.*git diff failed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);

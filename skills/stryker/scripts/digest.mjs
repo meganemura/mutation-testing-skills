@@ -24,7 +24,7 @@ const DEFAULT_REPORT_PATH = 'reports/mutation/mutation.json';
 
 // A survivor's covering tests can number in the hundreds for code near the
 // root of a call graph. Listing every one, for every survivor, produced a
-// 44MB digest on solarsql's full report (3,689 survivors): unreadable by an
+// 44MB digest on one project's full report (3,689 survivors): unreadable by an
 // agent. These caps keep `tests` to the file an agent actually needs (where
 // to add a test), not the full roster.
 const MAX_TEST_FILES = 10;
@@ -586,7 +586,7 @@ export function buildDigest(report) {
   perSource.sort(compareBy([(r) => r.file]));
 
   return {
-    schema_version: '4.0',
+    schema_version: '5.0',
     source: {
       tool: 'stryker',
       report_schema_version: report.schemaVersion,
@@ -727,6 +727,87 @@ export function formatGithub(digest) {
   return lines.join('\n');
 }
 
+// The order this list emits a `kind`, matching `references/digest.md`'s
+// "The output (`--format jsonl`)": survivor, unverified, timeout,
+// noCoverage, ignored, invalid, testWithoutKills. This is not the same
+// order as `formatGithub`'s or the JSON object's own key order (there,
+// `no_coverage` comes right after `unverified`, and `ignored` comes after
+// `invalid`); it was fixed once, here, so a reader scanning a live run
+// with `tail -f` sees a stable rhythm of kinds.
+const JSONL_KINDS = [
+  ['survivor', 'survivors'],
+  ['unverified', 'unverified'],
+  ['timeout', 'timeouts'],
+  ['no_coverage', 'no_coverage'],
+  ['ignored', 'ignored'],
+  ['invalid', 'invalid'],
+  ['test_without_kills', 'tests_without_kills'],
+];
+
+/**
+ * Renders the digest as JSONL, the default format: one JSON value per
+ * line, so an agent can `grep`, `jq`, or `tail -n 1` a run's output
+ * without parsing the whole file (see "Read it as it runs" in
+ * digest.md). The first line is `{"kind":"run",...}`; the last is
+ * `{"kind":"summary",...}`; every line in between carries one item, kind
+ * by kind, in `JSONL_KINDS`'s order (already the file's own sort order
+ * from `buildDigest`, so no re-sort happens here). `per_source[]` has no
+ * `kind` of its own and is left out: it is a file-level rollup, already
+ * available in full from `--format json`.
+ *
+ * A survivor's or an item's own fields are unchanged from `--format
+ * json`; only `kind` is added, so a reader that already knows those keys
+ * needs no new vocabulary. Every key is snake_case, the run line's too.
+ *
+ * The lists a caller acts on stay lines, not counts: each `stale[]` file
+ * is a `{"kind":"stale"}` line (a gate that cannot trust a file must say
+ * which one), and with `--baseline` each survivor line carries `new`, and
+ * each fixed survivor is a `{"kind":"fixed_survivor"}` line. The summary
+ * line adds the counts.
+ */
+export function formatJsonl(digest) {
+  const lines = [];
+  lines.push(
+    JSON.stringify({
+      kind: 'run',
+      schema_version: digest.schema_version,
+      tool: digest.source.tool,
+      report_schema_version: digest.source.report_schema_version,
+      disable_bail: digest.source.disable_bail,
+    }),
+  );
+  for (const entry of digest.stale ?? []) {
+    lines.push(JSON.stringify({ kind: 'stale', ...entry }));
+  }
+  const newIds =
+    digest.baseline === undefined
+      ? undefined
+      : new Set(digest.baseline.new_survivors.map((s) => s.id));
+  for (const [kind, key] of JSONL_KINDS) {
+    for (const entry of digest[key]) {
+      const line = { kind, ...entry };
+      if (newIds !== undefined && key === 'survivors') {
+        line.new = newIds.has(entry.id);
+      }
+      lines.push(JSON.stringify(line));
+    }
+  }
+  for (const entry of digest.baseline?.fixed_survivors ?? []) {
+    lines.push(JSON.stringify({ kind: 'fixed_survivor', ...entry }));
+  }
+  const summaryLine = { kind: 'summary', ...digest.summary };
+  if (digest.scoped !== undefined) {
+    summaryLine.scoped = digest.scoped;
+    summaryLine.stale_count = digest.stale.length;
+  }
+  if (digest.baseline !== undefined) {
+    summaryLine.new_survivors = digest.baseline.new_survivors.length;
+    summaryLine.fixed_survivors = digest.baseline.fixed_survivors.length;
+  }
+  lines.push(JSON.stringify(summaryLine));
+  return lines.join('\n');
+}
+
 /**
  * Parses a `git diff --unified=0` hunk header's "+" side into the
  * 1-based, inclusive line ranges it added or changed in the current file.
@@ -755,10 +836,15 @@ function rangesOverlap(start, end, ranges) {
  * `--since`-derived set of changed-line ranges, one array per file, and
  * recomputes `summary` from the narrowed set (`_mutantIndex`, stripped
  * before the digest is printed). A file the caller has marked stale (its
- * current content no longer matches `source_hash`) is dropped from every
- * list instead of filtered: the report's line numbers describe a source
- * that file no longer has, so trusting them would filter on the wrong
- * lines.
+ * current content no longer matches `source_hash`, or `git diff` itself
+ * failed for it) is dropped from every list instead of filtered: in
+ * either case, the file's changed-line ranges cannot be trusted, so
+ * filtering on them would filter on the wrong lines.
+ *
+ * `staleFiles` is a `Map<file, reason>`, not a `Set`: two different
+ * causes reach here (a content mismatch, and a `git diff` failure), and
+ * each needs its own reason string in `stale[]` and in `run`'s stderr
+ * warning.
  */
 export function applySince(digest, changedRangesByFile, staleFiles) {
   const rangesFor = (file) => changedRangesByFile.get(file) ?? [];
@@ -783,10 +869,9 @@ export function applySince(digest, changedRangesByFile, staleFiles) {
     unverified: filterRanged(digest.unverified),
     no_coverage: filterRanged(digest.no_coverage),
     timeouts: filterRanged(digest.timeouts),
-    stale: [...staleFiles].sort().map((file) => ({
-      file,
-      reason: 'source no longer matches the report; cannot scope by line',
-    })),
+    stale: [...staleFiles.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([file, reason]) => ({ file, reason })),
   };
 }
 
@@ -843,6 +928,27 @@ function gitRefExists(ref, cwd) {
   }
 }
 
+/** True when git's index tracks `file` (a committed or a staged file, not an untracked one). */
+function gitFileTracked(file, cwd) {
+  try {
+    execFileSync('git', ['ls-files', '--error-unmatch', file], { cwd, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reduces a failed git command's stderr to one line, for `stale[]`'s
+ * `reason` and `run`'s stderr warning: git's own message can run to
+ * several lines (an advice block after the "fatal:" line), and only the
+ * first says what happened.
+ */
+function firstStderrLine(err) {
+  const text = (err.stderr ?? '').toString().trim();
+  return text.split('\n')[0] || err.message;
+}
+
 /**
  * Builds `--since`'s two inputs for `applySince`: the changed-line ranges
  * `git diff --unified=0 <ref> -- <file>` reports for every file in the
@@ -856,12 +962,21 @@ function gitRefExists(ref, cwd) {
  * `readFileSync` and `execFileSync('git', ...)` touch the filesystem or a
  * subprocess; both are confined to this function so `applySince` itself
  * stays pure and testable without a real git repository.
+ *
+ * A file git does not track at all (never added, e.g. new in this
+ * branch) has no history for `git diff <ref> -- <file>` to compare
+ * against, so that command reports it unchanged, an empty range — which
+ * would let every mutant on it pass a `--gate` run silently, the one kind
+ * of change a changed-line gate exists to catch. Such a file is instead
+ * treated as changed on every one of its own lines: `gitFileTracked`
+ * checks the index first, ahead of the `diff` call, and an untracked
+ * file's range becomes `[1, <its own line count>]`.
  */
 function scopeSince(digest, report, ref, cwd) {
   const files = Object.keys(report.files ?? {});
 
   const changedRangesByFile = new Map();
-  const staleFiles = new Set();
+  const staleFiles = new Map();
 
   for (const file of files) {
     const reportSource = report.files?.[file]?.source;
@@ -869,22 +984,30 @@ function scopeSince(digest, report, ref, cwd) {
     let currentContent;
     try {
       currentContent = readFileSync(`${cwd}/${file}`, 'utf8');
-    } catch {
-      staleFiles.add(file);
+    } catch (err) {
+      staleFiles.set(file, `cannot read ${file}: ${err.message}`);
       continue;
     }
     if (reportedHash === undefined || sourceHash(currentContent) !== reportedHash) {
-      staleFiles.add(file);
+      staleFiles.set(file, 'source no longer matches the report; cannot scope by line');
       continue;
     }
+
+    if (!gitFileTracked(file, cwd)) {
+      const lineCount = currentContent.split('\n').length;
+      changedRangesByFile.set(file, [{ start: 1, end: lineCount }]);
+      continue;
+    }
+
     let diffText;
     try {
       diffText = execFileSync('git', ['diff', '--unified=0', ref, '--', file], {
         cwd,
         encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
-    } catch {
-      changedRangesByFile.set(file, []);
+    } catch (err) {
+      staleFiles.set(file, `git diff failed: ${firstStderrLine(err)}`);
       continue;
     }
     changedRangesByFile.set(file, parseUnifiedDiffRanges(diffText));
@@ -910,6 +1033,63 @@ function readJsonFile(path) {
 }
 
 /**
+ * Returns a `schema_version` string's leading number, or `-1` when it is
+ * missing or unparseable, so a caller comparing it against a minimum with
+ * `<` treats an absent version as "too old" rather than as `NaN`, which
+ * `<` and `>=` both silently treat as false.
+ */
+function baselineMajorVersion(schemaVersion) {
+  const m = /^(\d+)\./.exec(String(schemaVersion));
+  return m ? Number(m[1]) : -1;
+}
+
+/**
+ * Reads a `--baseline` file as either shape digest.mjs can write: one
+ * JSON object (`--format json`), or JSONL (`--format jsonl`, the
+ * default), told apart by whether the first line parses as its own JSON
+ * value with `kind: "run"`. Both use the same field names for a
+ * survivor, so a JSONL baseline reduces to the same `{ schema_version,
+ * survivors }` shape `compareBaseline` already expects.
+ */
+function readBaselineDigest(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (err) {
+    throw new UsageError(`cannot read ${path}: ${err.message}`);
+  }
+  const trimmed = raw.replace(/\n$/, '');
+  const firstLine = trimmed.split('\n', 1)[0];
+  let firstLineParsed;
+  try {
+    firstLineParsed = JSON.parse(firstLine);
+  } catch {
+    firstLineParsed = undefined;
+  }
+  if (!(firstLineParsed && firstLineParsed.kind === 'run')) {
+    try {
+      return JSON.parse(raw);
+    } catch (err) {
+      throw new UsageError(`cannot parse ${path} as JSON: ${err.message}`);
+    }
+  }
+  const survivors = [];
+  for (const line of trimmed.split('\n')) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch (err) {
+      throw new UsageError(`cannot parse ${path} as JSONL: ${err.message}`);
+    }
+    if (record.kind === 'survivor') {
+      const { kind, ...rest } = record;
+      survivors.push(rest);
+    }
+  }
+  return { schema_version: firstLineParsed.schemaVersion, survivors };
+}
+
+/**
  * Runs the CLI end to end and returns its output and exit code, without
  * calling `process.exit`. Kept separate from `main()` so tests can call it
  * in-process.
@@ -923,7 +1103,7 @@ export function run(argv, { cwd = process.cwd() } = {}) {
       strict: true,
       options: {
         baseline: { type: 'string' },
-        format: { type: 'string', default: 'json' },
+        format: { type: 'string', default: 'jsonl' },
         output: { type: 'string' },
         since: { type: 'string' },
         gate: { type: 'boolean', default: false },
@@ -935,7 +1115,7 @@ export function run(argv, { cwd = process.cwd() } = {}) {
 
   const reportPath = parsed.positionals[0] ?? DEFAULT_REPORT_PATH;
   const format = parsed.values.format;
-  if (format !== 'json' && format !== 'text' && format !== 'github') {
+  if (format !== 'jsonl' && format !== 'json' && format !== 'text' && format !== 'github') {
     return { exitCode: 2, stderr: `usage error: unknown --format ${format}\n`, stdout: '' };
   }
 
@@ -965,17 +1145,19 @@ export function run(argv, { cwd = process.cwd() } = {}) {
     }
 
     if (parsed.values.baseline) {
-      const baselineDigest = readJsonFile(parsed.values.baseline);
-      // A minor bump within 4.x only adds a key (see "Compatibility" in
-      // digest.md), so it does not change `id`; only the major version,
-      // where `id`'s own material last changed, needs to match.
-      if (typeof baselineDigest.schema_version !== 'string' || !baselineDigest.schema_version.startsWith('4.')) {
+      const baselineDigest = readBaselineDigest(parsed.values.baseline);
+      // A minor bump, or the 4.0-to-5.0 change of output shape alone (JSON
+      // to JSONL, with no change to a survivor's own keys), does not touch
+      // `id`'s material (see "Compatibility" in digest.md); only a major
+      // version below 4, where `id`'s own material last changed, is
+      // rejected.
+      if (baselineMajorVersion(baselineDigest.schema_version) < 4) {
         return {
           exitCode: 2,
           stderr:
             `usage error: --baseline schema_version ${String(baselineDigest.schema_version)} ` +
-            `does not match this digest's 4.x; the id's material changed, so an id from an ` +
-            `older baseline cannot match an id here\n`,
+            `is older than 4.0; the id's material changed there, so an id from an older ` +
+            `baseline cannot match an id here\n`,
           stdout: '',
         };
       }
@@ -1000,7 +1182,13 @@ export function run(argv, { cwd = process.cwd() } = {}) {
   }
 
   const body =
-    format === 'text' ? formatText(digest) : format === 'github' ? formatGithub(digest) : JSON.stringify(digest);
+    format === 'text'
+      ? formatText(digest)
+      : format === 'github'
+        ? formatGithub(digest)
+        : format === 'jsonl'
+          ? formatJsonl(digest)
+          : JSON.stringify(digest);
   const output = `${body}\n`;
 
   if (parsed.values.output) {
@@ -1009,7 +1197,11 @@ export function run(argv, { cwd = process.cwd() } = {}) {
 
   let exitCode = digest.baseline && digest.baseline.new_survivors.length > 0 ? 1 : 0;
   if (parsed.values.gate) {
-    if (digest.unverified.length > 0) {
+    const staleCount = digest.stale ? digest.stale.length : 0;
+    if (digest.unverified.length > 0 || staleCount > 0) {
+      // A stale file could not be scoped at all, the same measurement gap
+      // `unverified[]` names for a mutant: neither says the code has a
+      // real hole, only that this run cannot tell.
       exitCode = 3;
     } else if (digest.survivors.length > 0 || digest.no_coverage.length > 0) {
       exitCode = 1;
