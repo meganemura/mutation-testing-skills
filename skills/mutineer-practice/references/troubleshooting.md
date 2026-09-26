@@ -123,17 +123,29 @@ drops, once the teardown cleans up before asserting.
 ## 5. The default strategy reports a false kill
 
 Symptom: a mutant reads as `killed`, but applying the same change by
-hand leaves the unmutated suite green.
+hand leaves the unmutated suite green. Often every mutant of one file is
+`killed`.
 
 Cause: the default strategy, `reload`, writes the whole mutated file to
-a temporary file in the same directory and `load`s it, running the
-file's top-level code again. `--strategy redefine` instead reloads only
-the mutated method, parsed out with Prism.
+a temporary file in the source's directory and `load`s it. mutineer
+1.0.2 builds that path from the relative source path, so each backtrace
+line from the reloaded file shows a relative path, where `require`
+shows an absolute one. Code that compares a backtrace line's path with
+an absolute directory (a library that skips its own lines in a
+backtrace, for example) then fails a test for every mutant of the file.
+`reload` also runs the file's top-level code again, so a test that
+checks state set at load time fails the same way. `--strategy redefine` instead reloads
+only the mutated method, parsed out with Prism.
 
 Fix: run with `--strategy redefine`.
 
 Confirm: run the same mutant under both strategies and compare
 `survivors[].id`; a mutant `killed` only under `reload` is a false kill.
+To see the failing test, reload the unchanged file the same way, by a
+relative path, and run the suite: the test fails with no mutation at
+all.
+
+Reported to mutineer: https://github.com/davidteren/mutineer/issues/123
 
 ## 6. `already initialized constant` warnings, or a suite that only fails under mutineer
 
