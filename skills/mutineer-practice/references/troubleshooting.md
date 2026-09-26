@@ -85,7 +85,8 @@ Reported to mutineer: https://github.com/davidteren/mutineer/issues/120
 ## 3. A test using `capture_subprocess_io` always fails
 
 Symptom: the run aborts with the unmutated suite not green:
-`the unmutated suite is not green`.
+`the unmutated suite is not green`. The `TypeError` does not appear,
+even with `--verbose`.
 
 Cause: mutineer replaces `$stdout` with a `StringIO` before it runs the
 suite. Minitest's `capture_subprocess_io` reopens `$stdout` on a
@@ -99,8 +100,7 @@ usual.
 Confirm: reproduce by hand: set `$stdout = StringIO.new`, then run the
 suite; the same `TypeError` appears without mutineer in the loop.
 
-Report this to mutineer: `capture_subprocess_io` is part of Minitest's
-own standard library, not an unusual pattern.
+Reported to mutineer: https://github.com/davidteren/mutineer/issues/121
 
 ## 4. A leftover in the working directory fails later mutants
 
