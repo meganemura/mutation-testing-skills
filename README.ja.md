@@ -9,6 +9,10 @@ mutation testing のための Claude Code の skill 集です。
   JavaScript と TypeScript が対象です。
   [stryker-agent-reporter](https://github.com/meganemura/stryker-agent-reporter) の出力を読みます。
   これは Stryker の実行結果を、エージェントが行動に移せる生き残りの一覧に変えます。
+- `skills/mutineer-practice/`: [mutineer](https://github.com/davidteren/mutineer) の skill です。
+  Ruby の Minitest か RSpec が対象です。
+  導入と、実測した落とし穴を持ちます。
+  CLI とエージェントの手順を持つ、mutineer の作者自身の `mutineer` skill と一緒に入れてください。
 - `references/`: 道具に依らない mutation testing の一般論です。
   このリポジトリのすべての skill が共有します。
   変更の差分だけで pull request を関門にかける方法(`references/operations.md`)も含みます。
@@ -21,6 +25,13 @@ skill は [`skills`](https://github.com/vercel-labs/skills) の CLI で入れま
 
 ```
 npx skills add meganemura/mutation-testing-skills --skill stryker -g -a claude-code
+```
+
+次の 2 つは、mutineer の作者自身の skill と、このリポジトリの skill を、両方とも Claude Code のすべてのプロジェクトで使えるように入れます。
+
+```
+npx skills add davidteren/mutineer --skill mutineer -g -a claude-code
+npx skills add meganemura/mutation-testing-skills --skill mutineer-practice -g -a claude-code
 ```
 
 このリポジトリにある skill の一覧は、`npx skills add meganemura/mutation-testing-skills --list` で見られます。

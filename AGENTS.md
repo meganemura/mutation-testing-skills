@@ -6,6 +6,9 @@ Context for agents that work in this repository.
 
 A collection of Claude Code skills for mutation testing, one skill per
 tool. The first skill covers StrykerJS, for JavaScript and TypeScript.
+The second skill, `mutineer-practice`, covers setup and pitfalls for
+mutineer, a Ruby tool, and names mutineer's own skill as the source of
+truth for its CLI.
 
 ```
 README.md            entry point for a human reader
@@ -22,6 +25,12 @@ skills/stryker/         the StrykerJS skill
   references/configuration.md
   references/results.md
   references/agent-output.md
+  references/troubleshooting.md
+skills/mutineer-practice/  setup and pitfalls for mutineer
+  SKILL.md
+  references/general -> ../../../references (symlink)
+  references/install.md
+  references/results.md
   references/troubleshooting.md
 ```
 
