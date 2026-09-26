@@ -74,7 +74,8 @@ super() # mutineer:disable-line statement_removal
 Do not write the reason after the marker on the same line. mutineer reads
 each word after the marker as an operator name, so
 `# mutineer:disable-line statement_removal because ...` matches no
-operator and suppresses nothing.
+operator and suppresses nothing, with no warning. Reported to mutineer:
+https://github.com/davidteren/mutineer/issues/124
 
 `.mutineer.yml` also takes an `ignore:` list of ids. Prefer the marker: it
 moves with the code, and the reason sits next to it
