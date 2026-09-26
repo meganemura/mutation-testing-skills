@@ -21,11 +21,8 @@ skills/stryker/         the StrykerJS skill
   references/install.md
   references/configuration.md
   references/results.md
-  references/digest.md
+  references/agent-output.md
   references/troubleshooting.md
-  scripts/digest.mjs
-  scripts/digest.test.mjs
-  scripts/fixtures/
 ```
 
 ## Where a rule lives
@@ -58,20 +55,7 @@ Do not write a path specific to one machine, such as a personal home
 directory. Write an installation example using a placeholder directory
 name, such as `<repo>`.
 
-This repository holds documents and dependency-free scripts. Do not add
-a dependency.
+This repository holds documents. Do not add a dependency.
 
 When you change README.md, carry the same change into README.ja.md, its
 Japanese translation, kept one sentence per line.
-
-## Run a script's tests
-
-Each skill's scripts carry their own `node --test` files next to them.
-Run them with a glob that names the test files directly:
-
-```
-node --test skills/*/scripts/*.test.mjs
-```
-
-A bare directory argument to `node --test` does not reliably discover
-files by itself; name the files.

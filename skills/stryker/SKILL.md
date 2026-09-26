@@ -27,16 +27,17 @@ version control, dry-run the setup, then run one file. See
 
 ## 4. Read the result
 
-Run `scripts/digest.mjs` on the report first; see `references/digest.md`.
-It lists survivors with a stable id, a patch, and a rerun command. See
-`references/results.md` for Stryker's status names and score formulas,
-and `references/general/concepts.md` for what each term means.
+Read `reports/mutation/agent.jsonl`, the `agent` reporter's output; see
+`references/agent-output.md`. It lists survivors with a stable key, a
+patch, and a rerun command. See `references/results.md` for Stryker's
+status names and score formulas, and `references/general/concepts.md`
+for what each term means.
 
 ## 5. Triage the survivors
 
-Classify each `survivor` entry `digest.mjs` reports, in the order
+Classify each `survivor` line in `agent.jsonl`, in the order
 `references/general/triage.md` gives. After you add a test, confirm the
-kill with that entry's `rerun` command. When you judge a mutant
+kill with that line's `rerun` command. When you judge a mutant
 equivalent, disable it with `// Stryker disable next-line <operator>:
 <reason>`.
 
@@ -48,6 +49,7 @@ See `references/troubleshooting.md`.
 
 Move to a module, then the whole project. Consider incremental mode and a
 CI threshold. See `references/general/scoping.md`. For a PR, run
-`scripts/digest.mjs --since <base ref> --gate` instead: it fails only on
-a changed line's own survivor, with no full-project baseline needed. See
-`references/digest.md` and `references/general/operations.md`.
+`npx stryker-agent-reporter gate --since <base ref>` instead: it fails
+only on a changed line's own survivor, with no full-project baseline
+needed. See `references/agent-output.md` and
+`references/general/operations.md`.

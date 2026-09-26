@@ -1,4 +1,0 @@
-{"kind":"run","schemaVersion":"5.0","tool":"stryker","reportSchemaVersion":"1.0","disableBail":false}
-{"kind":"survivor","subject":"add","file":"src/a.ts","line":5,"operator":"ArithmeticOperator","token":"total - 1","id":"7e29b57b81eb"}
-{"kind":"survivor","subject":"double","file":"src/b.ts","line":20,"operator":"ArithmeticOperator","token":"x / 4","id":"aaaaaaaaaaaa"}
-{"kind":"summary","total":2,"killed":0,"timeout":0,"survived":2,"no_coverage":0,"compile_error":0,"runtime_error":0,"ignored":0,"pending":0,"unverified":0,"score":0,"score_covered":0,"score_excluding_unverified":0}

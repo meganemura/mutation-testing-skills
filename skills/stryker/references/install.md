@@ -121,14 +121,17 @@ Two points from measurement, to help you choose:
 
 ## 3. Get approval for the dependencies, and pin them
 
-- Add `@stryker-mutator/core` and one runner plugin as dev dependencies,
-  each pinned to an exact version:
-  `npm install --save-dev --save-exact <package>@<version>`. Adding a
-  dependency needs the repository owner's approval.
+- Add `@stryker-mutator/core`, one runner plugin, and
+  `stryker-agent-reporter` as dev dependencies, each pinned to an exact
+  version: `npm install --save-dev --save-exact <package>@<version>`.
+  Adding a dependency needs the repository owner's approval.
 - Choose a version published more than 7 days ago. If a newer version
   exists, read its release notes to check whether it fixes a security
   issue; if it does, consider the newer version instead. Read the
-  publish date with `npm view <package> time --json`.
+  publish date with `npm view <package> time --json`. A registry that
+  enforces a minimum release age on its own can refuse a fresh version
+  before this rule ever applies; see "A registry's own minimum release
+  age refuses a fresh version" in `troubleshooting.md`.
 - Check the runner plugin's peer dependency (`vitest` for the vitest
   runner, `vite` for vitest itself). npm installs a peer dependency on
   its own.
@@ -185,8 +188,14 @@ on Node's module semantics fails under Vite's module runner" in
 ## 5. Write the Stryker config
 
 Write one config file per runner. Both examples below hold the same
-`mutate`, `ignorePatterns`, and `disableTypeChecks` shape; adjust the
-file lists to what you picked in step 1.
+`mutate`, `ignorePatterns`, `disableTypeChecks`, and reporter shape;
+adjust the file lists to what you picked in step 1.
+
+Add `"agent"` to `reporters`, and add `stryker-agent-reporter` to Stryker's
+plugin list with `appendPlugins`, so Stryker loads the plugin alongside
+its own `@stryker-mutator/*` reporters. This gives you
+`reports/mutation/agent.jsonl`; see `references/agent-output.md` for how
+to read it.
 
 Tap runner:
 
@@ -199,7 +208,8 @@ Tap runner:
   "mutate": ["src/my-module.ts"],
   "disableTypeChecks": "src/my-module.ts",
   "coverageAnalysis": "perTest",
-  "reporters": ["clear-text", "progress", "html", "json"],
+  "reporters": ["clear-text", "progress", "html", "json", "agent"],
+  "appendPlugins": ["stryker-agent-reporter"],
   "ignorePatterns": ["dist"]
 }
 ```
@@ -214,7 +224,8 @@ Vitest runner:
   },
   "mutate": ["src/my-module.ts"],
   "disableTypeChecks": "src/my-module.ts",
-  "reporters": ["clear-text", "progress", "html", "json"],
+  "reporters": ["clear-text", "progress", "html", "json", "agent"],
+  "appendPlugins": ["stryker-agent-reporter"],
   "ignorePatterns": ["dist"]
 }
 ```

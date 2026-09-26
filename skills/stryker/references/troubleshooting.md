@@ -207,7 +207,8 @@ loader.
 ## Vitest 5: every mutant with per-test coverage survives, and no test runs
 
 Symptom: most survivors have a non-empty `coveredBy`, and `testsCompleted`
-is `0`. digest.mjs reports these under `unverified[]`, not `survivors[]`.
+is `0`. The `agent` reporter writes these as `unverified` lines, apart
+from `survivor` lines.
 
 Cause: Vitest 5 matches `testNamePattern` against a suite's name joined to
 a test's name with ` > `. Stryker's vitest-runner 10.0.0 joins them with a
@@ -297,3 +298,25 @@ as survived. Removing the two variables made the kills appear.
 Fix: remove `NODE_TEST_CONTEXT` and `NODE_TEST_WORKER_ID` from the
 environment of the process that starts Stryker. Confirm the fix: the
 killed count is above 0.
+
+## A registry's own minimum release age refuses a fresh version
+
+Symptom: `npm install --save-exact <package>@<version>` fails with
+`No matching version found ... with a date before ...`, even though the
+package's own version 7-day rule (see "Get approval for the dependencies,
+and pin them" in `install.md`) already passed.
+
+Cause: npm's own `min-release-age` setting sets a floor, in days, under
+every package's version, separate from this skill's own rule. Check it
+with `npm config get min-release-age`. An environment that sets this can
+still allow one trusted package to install fresh, through
+`min-release-age-exclude`, a list of package names. `stryker-agent-reporter`
+is one example of a package an environment might add to that list.
+
+Fix: wait out the registry's own floor, or ask whoever controls the npm
+configuration to add the package to `min-release-age-exclude`. In a
+`.npmrc` file, each excluded package is one line:
+
+```
+min-release-age-exclude[]=stryker-agent-reporter
+```

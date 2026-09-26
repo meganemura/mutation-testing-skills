@@ -7,8 +7,8 @@ mutation testing のための Claude Code の skill 集です。
 
 - `skills/stryker/`: [StrykerJS](https://stryker-mutator.io/) の skill です。
   JavaScript と TypeScript が対象です。
-  `scripts/digest.mjs` を含みます。
-  これは Stryker の report を、エージェントが行動に移せる生き残りの一覧に変えます。
+  [stryker-agent-reporter](https://github.com/meganemura/stryker-agent-reporter) の出力を読みます。
+  これは Stryker の実行結果を、エージェントが行動に移せる生き残りの一覧に変えます。
 - `references/`: 道具に依らない mutation testing の一般論です。
   このリポジトリのすべての skill が共有します。
   変更の差分だけで pull request を関門にかける方法(`references/operations.md`)も含みます。

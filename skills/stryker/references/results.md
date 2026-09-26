@@ -1,11 +1,13 @@
 # Read a StrykerJS result
 
-## Use digest.mjs first
+## Read agent.jsonl first
 
-Run `scripts/digest.mjs` on the report before you read the JSON or the
-clear-text output by hand. It lists each survivor with a stable id, a
-diff, the covering tests, and a command that reruns just that mutant.
-See `digest.md`.
+Read `reports/mutation/agent.jsonl`, the `agent` reporter's output,
+before you read the JSON or the clear-text output by hand. It lists each
+survivor with a stable key, a diff, the covering tests, and a command
+that reruns just that mutant. Already have a saved `mutation.json` from a
+run configured without the `agent` reporter? Build the same file from it
+with `npx stryker-agent-reporter convert`. See `agent-output.md`.
 
 ## Status names
 

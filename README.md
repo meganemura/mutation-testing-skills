@@ -7,8 +7,10 @@ surviving mutants.
 ## What is here
 
 - `skills/stryker/`: a skill for [StrykerJS](https://stryker-mutator.io/),
-  for JavaScript and TypeScript. It includes `scripts/digest.mjs`, which
-  turns a Stryker report into a survivor list an agent can act on.
+  for JavaScript and TypeScript. It reads
+  [stryker-agent-reporter](https://github.com/meganemura/stryker-agent-reporter)'s
+  output, which turns a Stryker run into a survivor list an agent can act
+  on.
 - `references/`: tool-neutral mutation testing concepts, shared by every
   skill in this repository, including how to gate a pull request on a
   change's own diff (`references/operations.md`). See
