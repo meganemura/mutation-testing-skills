@@ -51,5 +51,6 @@ Move to a module, then the whole project. For a pull request, mutineer's
 own `--since` and `--baseline` flags scope a run to the changed lines
 and gate on a regression; see the author's
 [agentic-coding guide](https://github.com/davidteren/mutineer/blob/v1.0.2/docs/agentic-coding.md).
-For the roles and the timing around a gate, see
-`references/general/operations.md`.
+When a full run takes a few minutes, gate on a committed baseline of
+accepted survivors instead; see `references/gate.md`. For the roles and
+the timing around a gate, see `references/general/operations.md`.

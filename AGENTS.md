@@ -32,6 +32,7 @@ skills/mutineer-practice/  setup and pitfalls for mutineer
   references/install.md
   references/results.md
   references/troubleshooting.md
+  references/gate.md
 ```
 
 ## Where a rule lives
