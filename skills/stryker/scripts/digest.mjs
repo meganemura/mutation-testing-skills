@@ -17,6 +17,14 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_REPORT_PATH = 'reports/mutation/mutation.json';
 
+// A survivor's covering tests can number in the hundreds for code near the
+// root of a call graph. Listing every one, for every survivor, produced a
+// 44MB digest on solarsql's full report (3,689 survivors): unreadable by an
+// agent. These caps keep `tests` to the file an agent actually needs (where
+// to add a test), not the full roster.
+const MAX_TEST_FILES = 10;
+const MAX_TEST_NAMES_PER_FILE = 3;
+
 const STATUS_TO_SUMMARY_KEY = {
   Killed: 'killed',
   Timeout: 'timeout',
@@ -258,14 +266,42 @@ function buildTestIndex(testFiles) {
   const index = new Map();
   for (const [file, testFile] of Object.entries(testFiles ?? {})) {
     for (const test of testFile.tests ?? []) {
-      const entry = { name: test.name, file };
-      if (test.location?.start?.line !== undefined) {
-        entry.line = test.location.start.line;
-      }
-      index.set(test.id, entry);
+      index.set(test.id, { name: test.name, file });
     }
   }
   return index;
+}
+
+/**
+ * Reduces a mutant's covering tests to the file-level summary a `survivors[]`
+ * or `unverified[]` entry carries as `tests`: a total count, up to
+ * `MAX_TEST_FILES` files (busiest first, ties broken by file name), and up
+ * to `MAX_TEST_NAMES_PER_FILE` test names per file (alphabetical). A test's
+ * location, even when the report has it, is left out: mixing `name` and
+ * `{ name, line }` across entries would give `names[]` two shapes for the
+ * same field, so the cap on this array is the only truncation signal.
+ */
+export function summarizeTests(tests) {
+  const total = tests.length;
+  const byFile = new Map();
+  for (const t of tests) {
+    if (!byFile.has(t.file)) byFile.set(t.file, []);
+    byFile.get(t.file).push(t.name);
+  }
+  const fileGroups = [...byFile.entries()].map(([file, names]) => ({
+    file,
+    count: names.length,
+    names: [...names].sort(),
+  }));
+  fileGroups.sort(compareBy([(f) => -f.count, (f) => f.file]));
+
+  let truncated = fileGroups.length > MAX_TEST_FILES;
+  const files = fileGroups.slice(0, MAX_TEST_FILES).map((f) => {
+    if (f.names.length > MAX_TEST_NAMES_PER_FILE) truncated = true;
+    return { file: f.file, count: f.count, names: f.names.slice(0, MAX_TEST_NAMES_PER_FILE) };
+  });
+
+  return { total, truncated, files };
 }
 
 /** Reads the schema's `MutationTestResult` and builds the agent digest. */
@@ -338,10 +374,9 @@ export function buildDigest(report) {
       for (const testId of mutant.killedBy ?? []) killedTestIds.add(testId);
 
       if (mutant.status === 'Survived') {
-        const tests = (mutant.coveredBy ?? [])
-          .map((id) => testIndex.get(id))
-          .filter(Boolean)
-          .sort(compareBy([(t) => t.file, (t) => t.name]));
+        const tests = summarizeTests(
+          (mutant.coveredBy ?? []).map((id) => testIndex.get(id)).filter(Boolean),
+        );
         // Survived, covered, and yet not one covering test actually ran: a
         // measurement gap (the vitest-runner 10.0.0 / Vitest 5 pairing hit
         // this, stryker-js issue #6210), not a missing test. Route it away
@@ -461,7 +496,7 @@ export function buildDigest(report) {
   perSource.sort(compareBy([(r) => r.file]));
 
   return {
-    schema_version: '2.0',
+    schema_version: '3.0',
     source: {
       tool: 'stryker',
       report_schema_version: report.schemaVersion,

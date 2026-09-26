@@ -21,6 +21,7 @@ import {
   findSubject,
   formatText,
   sourceHash,
+  summarizeTests,
 } from './digest.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -83,7 +84,11 @@ test('survivor patch, subject, tests, source_hash, rerun, and rerun_exact', () =
     '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -5,1 +5,1 @@\n' +
       '-    total = total - 1;\n+    total = total + 1;\n',
   );
-  assert.deepEqual(survivor.tests, [{ name: 'add works', file: 'test/a.test.ts' }]);
+  assert.deepEqual(survivor.tests, {
+    total: 1,
+    truncated: false,
+    files: [{ file: 'test/a.test.ts', count: 1, names: ['add works'] }],
+  });
   assert.equal(survivor.rerun, 'npx stryker run --incremental --mutate "src/a.ts"');
   assert.equal(survivor.rerun_exact, 'npx stryker run --force --mutate "src/a.ts:5:12-5:21"');
   assert.ok(!('token' in survivor), 'survivors[] no longer carries token');
@@ -216,6 +221,58 @@ test('a duplicate\'s id does not change when its twin\'s status changes', () => 
     (s) => s.replacement === 'this.value - step' && s.line === 13,
   );
   assert.equal(afterSurvivor.id, beforeSurvivorId);
+});
+
+test('summarizeTests: exactly 10 files is not truncated, 11 files is', () => {
+  const tenFiles = Array.from({ length: 10 }, (_, i) => ({
+    name: 't', file: `test/f${String(i).padStart(2, '0')}.test.ts`,
+  }));
+  const ten = summarizeTests(tenFiles);
+  assert.equal(ten.files.length, 10);
+  assert.equal(ten.truncated, false);
+  assert.equal(ten.total, 10);
+
+  const elevenFiles = [...tenFiles, { name: 't', file: 'test/f10.test.ts' }];
+  const eleven = summarizeTests(elevenFiles);
+  assert.equal(eleven.files.length, 10);
+  assert.equal(eleven.truncated, true);
+  assert.equal(eleven.total, 11);
+});
+
+test('summarizeTests: exactly 3 names is not truncated, 4 names is', () => {
+  const threeNames = ['c', 'a', 'b'].map((name) => ({ name, file: 'test/f.test.ts' }));
+  const three = summarizeTests(threeNames);
+  assert.equal(three.truncated, false);
+  assert.deepEqual(three.files[0].names, ['a', 'b', 'c']);
+  assert.equal(three.files[0].count, 3);
+
+  const fourNames = [...threeNames, { name: 'd', file: 'test/f.test.ts' }];
+  const four = summarizeTests(fourNames);
+  assert.equal(four.truncated, true);
+  assert.deepEqual(four.files[0].names, ['a', 'b', 'c']);
+  assert.equal(four.files[0].count, 4);
+});
+
+test('summarizeTests: files sort by count descending, ties by file name', () => {
+  const tests = [
+    { name: 't1', file: 'test/b.test.ts' },
+    { name: 't1', file: 'test/a.test.ts' },
+    { name: 't2', file: 'test/a.test.ts' },
+    { name: 't1', file: 'test/c.test.ts' },
+    { name: 't2', file: 'test/c.test.ts' },
+  ];
+  const result = summarizeTests(tests);
+  assert.deepEqual(
+    result.files.map((f) => f.file),
+    ['test/a.test.ts', 'test/c.test.ts', 'test/b.test.ts'],
+  );
+  assert.equal(result.total, 5);
+  assert.equal(result.truncated, false);
+});
+
+test('summarizeTests: an empty tests list is not truncated and has no files', () => {
+  const result = summarizeTests([]);
+  assert.deepEqual(result, { total: 0, truncated: false, files: [] });
 });
 
 test('output is deterministic across two runs', () => {

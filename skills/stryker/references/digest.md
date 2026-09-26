@@ -43,7 +43,7 @@ node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>
 
 ```jsonc
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "source": { "tool": "stryker", "report_schema_version": "1.0", "disable_bail": false },
   "summary": { "total": 0, "killed": 0, "timeout": 0, "survived": 0, "no_coverage": 0, "compile_error": 0, "runtime_error": 0, "ignored": 0, "pending": 0, "unverified": 0, "score": null, "score_covered": null, "score_excluding_unverified": null },
   "survivors": [],
@@ -60,13 +60,16 @@ node <skill>/scripts/digest.mjs [report.json] [--baseline <previous digest.json>
 
 `baseline` is present only with `--baseline`.
 
-`schema_version` is `2.0`. It changed from `1.0` because `survivors[]`
-dropped `token` and `diff` for `patch`, and because a run's own `rerun`
-key changed meaning (see `survivors[]` below); both are breaking changes
-to a reader that keys off those fields. `id` did not change: a `2.0`
-digest's survivor carries the same `id` a `1.0` digest gave the same
-mutant, so a `1.0` baseline still matches a `2.0` run's survivors (see
-`baseline` below).
+`schema_version` is `3.0`. It changed from `2.0` because `survivors[]`
+and `unverified[]` replaced `tests`'s flat test list with the
+`{ total, truncated, files }` summary described below, a breaking change
+to a reader that keys off the old `tests` shape. It changed from `1.0` to
+`2.0` because `survivors[]` dropped `token` and `diff` for `patch`, and
+because a run's own `rerun` key changed meaning (see `survivors[]`
+below). `id` did not change across any of these: a `3.0` digest's
+survivor carries the same `id` a `1.0` or `2.0` digest gave the same
+mutant, so a `1.0` or `2.0` baseline still matches a `3.0` run's
+survivors (see `baseline` below).
 
 ### `summary`
 
@@ -137,9 +140,19 @@ claims (see below):
   node -e "console.log(require('node:crypto').createHash('sha256').update(require('node:fs').readFileSync(process.argv[1])).digest('hex').slice(0,16))" <file>
   ```
 
-- `tests`: the tests in `coveredBy`, as `{ name, file }`, with `file`
-  looked up from the report's `testFiles`. A test's location is not
-  always in the report, so `line` appears only when the report has it.
+- `tests`: a file-level summary of the tests in `coveredBy`, not the full
+  list — on solarsql's full report (3,689 survivors), listing every
+  covering test made a 44MB digest, unreadable by an agent. Shape:
+  `{ total, truncated, files }`.
+  - `total`: the number of covering tests, before any truncation.
+  - `files`: one entry per file the covering tests came from,
+    `{ file, count, names }`, `count`-descending, ties broken by `file`
+    name. At most 10 entries (`MAX_TEST_FILES` in digest.mjs).
+  - `names`: the covering test names in that file, alphabetical. At most
+    3 (`MAX_TEST_NAMES_PER_FILE`). A test's location is left out even
+    when the report has it, so every entry keeps the same shape.
+  - `truncated`: `true` when `files` left out an 11th-or-later file, or
+    when any listed file's `names` left out a 4th-or-later name.
 - `rerun`: a command that reruns this mutant's file in Stryker's own
   incremental mode: `npx stryker run --incremental --mutate "<file>"`.
   Incremental mode realigns a mutant's position from the source diff and
