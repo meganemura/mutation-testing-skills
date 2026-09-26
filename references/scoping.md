@@ -30,11 +30,10 @@ An incremental run mutates only the code and tests that changed since the
 last run, and reuses prior results for everything else. This keeps a run
 fast in a large, long-lived project, once the first full run exists.
 
-## Set a threshold in CI
+## Gate a pull request
 
-A CI pipeline can compare each run's mutation score to a threshold and
-fail the build when the score drops. This catches a regression in test
-strength without requiring a person to read the full report every time.
+See `operations.md`, in this directory, for how to gate a pull request on
+mutation testing without requiring a person to read the full report.
 
 ## Do not chase a fixed score
 

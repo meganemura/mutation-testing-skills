@@ -11,6 +11,7 @@ mutation testing のための Claude Code の skill 集です。
   これは Stryker の report を、エージェントが行動に移せる生き残りの一覧に変えます。
 - `references/`: 道具に依らない mutation testing の一般論です。
   このリポジトリのすべての skill が共有します。
+  変更の差分だけで pull request を関門にかける方法(`references/operations.md`)も含みます。
   各 skill がこの資料にどう届くかは、`docs/adr/0001-shared-references.md` にあります。
 
 ## skill を入れる

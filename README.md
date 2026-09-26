@@ -10,8 +10,10 @@ surviving mutants.
   for JavaScript and TypeScript. It includes `scripts/digest.mjs`, which
   turns a Stryker report into a survivor list an agent can act on.
 - `references/`: tool-neutral mutation testing concepts, shared by every
-  skill in this repository. See `docs/adr/0001-shared-references.md` for
-  how each skill reaches this material.
+  skill in this repository, including how to gate a pull request on a
+  change's own diff (`references/operations.md`). See
+  `docs/adr/0001-shared-references.md` for how each skill reaches this
+  material.
 
 ## Install a skill
 

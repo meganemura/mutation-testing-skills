@@ -14,6 +14,7 @@ AGENTS.md             this file
 CLAUDE.md             symlink to AGENTS.md
 docs/adr/              design records
 references/            tool-neutral mutation testing concepts
+  operations.md          run mutation testing across roles and time
 skills/stryker/         the StrykerJS skill
   SKILL.md
   references/general -> ../../../references (symlink)
