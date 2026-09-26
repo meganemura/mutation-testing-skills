@@ -29,6 +29,16 @@ changed line is either killed or ignored with a reason. This condition
 comes from the change's own diff, so it needs no result from a previous
 run. It also does not indict code the change did not touch.
 
+When the whole project runs in a few minutes, a second form works: run in
+full on every pull request, and fail on a survivor that a committed
+baseline does not list. The baseline is the list of accepted survivors,
+keyed by an id that does not depend on the line number. This form also
+covers section 5, because a weakened test turns a killed mutant into a
+survivor that the baseline does not list. The two forms differ on one
+case. Under the diff gate, an edit to a line with an old survivor makes
+the author kill or ignore that survivor. Under the baseline gate, the old
+survivor stays accepted.
+
 Do not gate on an absolute score threshold (for example, failing a build
 when the score drops below a fixed percentage). A codebase written before
 mutation testing was in place usually starts under most thresholds, so
@@ -107,6 +117,7 @@ types or code outside the mutated source.
 | Incremental run state | No | A cache tied to the branch that produced it; it is large and changes on every run |
 | A judgment to ignore a mutant | Yes | A comment in the source, next to the mutant (section 4) |
 | A list of surviving mutants' keys | Can, if small | Prefer re-deriving position from a stored full result (section 5) when position must be exact; a key list alone has the weak point below |
+| A baseline of accepted survivors, for the full-run gate (section 3) | Yes, when small | Write one survivor per line, sorted, without line numbers. A tool's own report is often one line of JSON, and a pull request then shows any change as one changed line. A line number changes on every edit above it |
 
 ## 9. What each scope costs in time
 
@@ -121,7 +132,10 @@ Three scopes, from fastest to slowest:
 
 One project's measurements: a full run of 14,140 mutants took about 2.5
 hours with a per-test runner, and an estimated 9 to 10 hours with a
-per-file runner. A single file of 32 mutants took 6 seconds.
+per-file runner. A single file of 32 mutants took 6 seconds. A smaller
+project's full run of 706 mutants took about a minute on a 12-core
+machine, and about four minutes as a hosted CI job, setup included. At
+that size, the full-run gate of section 3 fits in a pull request check.
 
 ## 10. Fix surviving mutants while the run that found them is still going
 
