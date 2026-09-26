@@ -289,10 +289,10 @@ an end-to-end test of a Stryker setup. The command runner's own
 killed count is 0.
 
 Cause: the outer `node --test` sets `NODE_TEST_CONTEXT` and
-`NODE_TEST_WORKER_ID` in its environment. The command runner's child
-process inherits them, and the inner `node --test` then reports to the
-outer process instead of failing on its own. Its exit code stays 0, so
-Stryker counts each mutant as survived.
+`NODE_TEST_WORKER_ID` in its environment, and the command runner's child
+process inherits them. The observed result: the inner `node --test`
+exits with code 0 even when a test fails, so Stryker counts each mutant
+as survived. Removing the two variables made the kills appear.
 
 Fix: remove `NODE_TEST_CONTEXT` and `NODE_TEST_WORKER_ID` from the
 environment of the process that starts Stryker. Confirm the fix: the
