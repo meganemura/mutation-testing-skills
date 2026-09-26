@@ -135,25 +135,34 @@ Fix: run with `--strategy redefine`.
 Confirm: run the same mutant under both strategies and compare
 `survivors[].id`; a mutant `killed` only under `reload` is a false kill.
 
-## 6. Many `already initialized constant` warnings
+## 6. `already initialized constant` warnings, or a suite that only fails under mutineer
 
-Symptom: the run's output carries a large number of Ruby's
-`already initialized constant` warnings, under either strategy.
+Symptom: the run prints many `already initialized constant` warnings,
+under either strategy. In worse cases, a suite that passes under the
+project's test task fails under mutineer:
 
-Cause: before running the suite, mutineer `load`s the mutated source
-once, for the clean check and for coverage capture. `load` does not
-record the file in `$LOADED_FEATURES`, so a later `require` of the same
-file, from the test suite itself, loads it again.
+- A class such as `class Point < Struct.new(:x, :y)` makes coverage
+  capture fail (`coverage skipped for ...: subprocess exited 1` with
+  `--verbose`). Every mutant counts as `uncapturable`, the score is N/A,
+  and the exit code is 0.
+- A source that registers something at load time holds the entry twice,
+  and the run stops with `the unmutated suite is not green`.
 
-Fix: none yet. Most of these warnings are harmless. Read the top level
-of the source file to judge whether it sets state (a constant that
-should be assigned only once, for example); if it does, a run's result
-for that file needs closer reading.
+Cause: the clean check and coverage capture read each unmutated source
+with `load` before the tests run. `load` does not record the file in
+`$LOADED_FEATURES`, so the suite's own `require` of the same file runs
+it a second time. `Struct.new` and `Data.define` return a new class on
+each call, so the second run raises `superclass mismatch`.
 
-Report this to mutineer: loading a mutated source through `load` and
-then again through the suite's own `require` is inherent to how
-mutineer checks and captures coverage, and a project has no setting to
-avoid it.
+Fix: none from the project's side. Most of the warnings are harmless.
+Read the top level of each source. A `Struct` or `Data` superclass
+fails under mutineer 1.0.2. State set at load time fails when a test
+checks it.
+
+Confirm: `load` the source, then `load` the test file, in one Ruby
+process. The same error or doubled state appears without mutineer.
+
+Reported to mutineer: https://github.com/davidteren/mutineer/issues/122
 
 ## 7. Fixing survivors while a run is in progress
 
